@@ -5,3 +5,7 @@
 tfplan
 .terraform/
 dist/
+bin/
+.tools/
+cover.out
+snowstate.yaml

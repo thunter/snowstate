@@ -1,0 +1,41 @@
+version: "2"
+run:
+  timeout: 5m
+  build-tags: [integration]
+linters:
+  enable:
+    - bodyclose
+    - errorlint
+    - gosec
+    - misspell
+    - nilerr
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+    - unparam
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    gosec:
+      excludes:
+        - G401 # md5 is mandated by the Terraform protocol, not used for security
+        - G501
+        - G115
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [gosec, unparam, errcheck]
+      - path: test/
+        linters: [gosec, unparam]
+formatters:
+  enable:
+    - gofmt
+    - goimports
