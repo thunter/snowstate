@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/thunter/snowstate/pkg/snowstate/store"
+	"github.com/thunter/snowstate/pkg/snowstate/store/memory"
 )
 
 const fixture = `
@@ -272,4 +274,135 @@ func TestScenario8LargeState(t *testing.T) {
 		assert.Equal(t, sum, md5.Sum(out[:len(stored)]), "pull returns identical bytes")
 
 	})
+}
+
+// sidecarWorkdir is a root module with an empty backend block, run through
+// `snowstate exec` with a store shared across processes.
+type sidecarWorkdir struct {
+	*workdir
+	key      string
+	snapshot string
+}
+
+func newSidecarWorkdir(t *testing.T, c client, key, tf string) *sidecarWorkdir {
+	t.Helper()
+	w := newWorkdir(t, c, "terraform {\n  backend \"http\" {}\n}\n"+tf)
+	snapshot := filepath.Join(t.TempDir(), "store.json")
+	w.env = append(w.env, "SNOWSTATE_ALLOW_TEST_STORE=1", "SNOWSTATE_TEST_STORE_FILE="+snapshot, "SNOWSTATE_KEY="+key)
+	return &sidecarWorkdir{workdir: w, key: key, snapshot: snapshot}
+}
+
+// sidecar builds `snowstate exec ... -- <client> args`.
+func (w *sidecarWorkdir) sidecar(execFlags []string, args ...string) *exec.Cmd {
+	full := append([]string{"exec", "--store=memory"}, execFlags...)
+	full = append(full, "--", w.c.bin)
+	full = append(full, args...)
+	cmd := exec.Command(binary, full...)
+	cmd.Dir = w.dir
+	cmd.Env = w.env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return cmd
+}
+
+func (w *sidecarWorkdir) okSidecar(args ...string) string {
+	w.t.Helper()
+	out, err := w.sidecar(nil, args...).CombinedOutput()
+	require.NoError(w.t, err, "%s\n%s", strings.Join(args, " "), out)
+	return string(out)
+}
+
+// 6. snowstate exec -- terraform apply, end to end.
+func TestScenario6Sidecar(t *testing.T) {
+	forEachClient(t, func(t *testing.T, c client) {
+		key := "platform/sidecar/prod"
+		w := newSidecarWorkdir(t, c, key, `resource "terraform_data" "d" { input = "x" }
+output "o" { value = "side" }
+`)
+		w.okSidecar("init", "-input=false")
+		w.okSidecar("apply", "-auto-approve", "-input=false")
+
+		out, err := w.sidecar(nil, "plan", "-detailed-exitcode", "-input=false").CombinedOutput()
+		require.NoError(t, err, "no changes expected\n%s", out)
+
+		locks, err := memory.ReadSnapshotLocks(w.snapshot)
+		require.NoError(t, err)
+		assert.Empty(t, locks)
+
+		events, err := memory.ReadSnapshotAudit(w.snapshot)
+		require.NoError(t, err)
+		assert.Contains(t, auditActions(events), store.ActionPut)
+
+		// Nothing about the sidecar may reach the working directory.
+		raw, err := os.ReadFile(filepath.Join(w.dir, ".terraform", "terraform.tfstate"))
+		require.NoError(t, err)
+		assert.NotContains(t, string(raw), "127.0.0.1")
+	})
+}
+
+func TestSidecarExitCodeIsForwarded(t *testing.T) {
+	env := append(baseEnv(), "SNOWSTATE_ALLOW_TEST_STORE=1", "SNOWSTATE_KEY=a/b")
+
+	cmd := exec.Command(binary, "exec", "--store=memory", "--", "sh", "-c", "exit 7")
+	cmd.Env = env
+	err := cmd.Run()
+	var exit *exec.ExitError
+	require.ErrorAs(t, err, &exit)
+	assert.Equal(t, 7, exit.ExitCode())
+
+	cmd = exec.Command(binary, "exec", "--store=memory", "--", "sh", "-c", "kill -KILL $$")
+	cmd.Env = env
+	err = cmd.Run()
+	require.ErrorAs(t, err, &exit)
+	assert.Equal(t, 137, exit.ExitCode(), "a signalled child exits 128+n")
+
+	cmd = exec.Command(binary, "exec", "--store=memory", "--", "sh", "-c", `test -n "$TF_HTTP_PASSWORD" && echo "$TF_HTTP_ADDRESS"`)
+	cmd.Env = env
+	out, err := cmd.Output()
+	require.NoError(t, err)
+	assert.Regexp(t, `^http://127\.0\.0\.1:\d+/v1/states/a/b\n$`, string(out))
+}
+
+func TestSidecarRequiresKeyAndTestStoreGate(t *testing.T) {
+	cmd := exec.Command(binary, "exec", "--store=memory", "--", "true")
+	cmd.Env = append(baseEnv(), "SNOWSTATE_ALLOW_TEST_STORE=1")
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err)
+	assert.Contains(t, string(out), "SNOWSTATE_KEY")
+
+	cmd = exec.Command(binary, "exec", "--store=memory", "--key=a/b", "--", "true")
+	cmd.Env = baseEnv()
+	out, err = cmd.CombinedOutput()
+	require.Error(t, err)
+	assert.Contains(t, string(out), "SNOWSTATE_ALLOW_TEST_STORE")
+}
+
+// A single SIGINT must reach the child exactly once, even when the signal is
+// sent to the sidecar's whole process group as a CI runner might.
+func TestSidecarSignalReachesChildOnce(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "count")
+	script := fmt.Sprintf(`trap 'echo hit >> %s' INT TERM
+echo ready
+n=0
+while [ $n -lt 40 ]; do sleep 0.1; n=$((n+1)); done
+`, marker)
+
+	for _, sig := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM} {
+		require.NoError(t, os.RemoveAll(marker))
+		cmd := exec.Command(binary, "exec", "--store=memory", "--key=a/b", "--", "sh", "-c", script)
+		cmd.Env = append(baseEnv(), "SNOWSTATE_ALLOW_TEST_STORE=1")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		stdout, err := cmd.StdoutPipe()
+		require.NoError(t, err)
+		require.NoError(t, cmd.Start())
+		_, err = stdout.Read(make([]byte, 16))
+		require.NoError(t, err)
+
+		require.NoError(t, syscall.Kill(-cmd.Process.Pid, sig), "signal the group")
+		require.NoError(t, cmd.Wait())
+
+		raw, err := os.ReadFile(marker)
+		require.NoError(t, err)
+		assert.Equal(t, 1, strings.Count(string(raw), "hit"), sig.String())
+	}
 }

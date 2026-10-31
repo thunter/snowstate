@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -11,7 +12,12 @@ import (
 )
 
 func main() {
-	if err := newRootCmd().Execute(); err != nil {
+	err := newRootCmd().Execute()
+	var exit exitError
+	if errors.As(err, &exit) {
+		os.Exit(exit.code)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -25,7 +31,7 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.PersistentFlags().String("config", "", "config file (default ./snowstate.yaml if present)")
-	root.AddCommand(newServeCmd())
+	root.AddCommand(newServeCmd(), newExecCmd())
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print version information",

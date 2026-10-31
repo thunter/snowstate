@@ -135,7 +135,7 @@ func Listen(cfg *config.Config, handler http.Handler, m *obs.Metrics, log *slog.
 			ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 		},
 	}
-	if cfg.Metrics.Listen != "" {
+	if cfg.Metrics.Listen != "" && m != nil {
 		s.metrics = &http.Server{Addr: cfg.Metrics.Listen, Handler: m.Handler(), ReadHeaderTimeout: 30 * time.Second}
 	}
 	return s, nil

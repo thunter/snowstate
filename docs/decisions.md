@@ -93,3 +93,22 @@ tests read the audit log. It sits behind the same `SNOWSTATE_ALLOW_TEST_STORE=1`
 
 E2E findings: `terraform state pull` prints through a helper that appends one newline, so byte comparison must allow
 for it. `state push` makes the client bump `serial` again when it persists.
+
+## M2 decisions
+
+**D11. The sidecar's child runs in its own process group.** §8.1 says to forward SIGINT and SIGTERM, but a terminal
+Ctrl-C signals the whole foreground group, so forwarding alone delivers it twice, and Terraform treats a second SIGINT as
+"abort immediately". With `Setpgid` the child only sees the forwarded signal. On a terminal the child's group is also
+made the foreground group (`Foreground`/`Ctty`), otherwise its prompts stop with SIGTTIN. Verified on a real pty:
+`read` works and Ctrl-C arrives once. `TestSidecarSignalReachesChildOnce` covers the non-tty case by signalling the group.
+
+**D12. Sidecar logging defaults to warnings on stderr.** Terraform owns the terminal, so `log.level=info` (the default)
+is lowered to `warn` for `exec`, in text format. Any other configured level is honoured.
+
+**D13. Audit principal in sidecar mode is `snowflake.user`.** The Basic username is the fixed value `sidecar` from §8.1,
+which would make audit rows useless, so `LoopbackSecret.Identity` replaces it with the Snowflake user and `Source` is
+`snowflake`.
+
+**D14. After `--shutdown-grace` following a second signal, the child is killed.** §8.1 says the server stops then, and
+leaving a child running against a dead backend would only produce confusing errors. The lock stays held and the release
+command is printed.

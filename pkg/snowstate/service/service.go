@@ -101,6 +101,9 @@ func (AllowAll) Authorize(context.Context, Principal, string, string) error { re
 type Hooks struct {
 	LockConflict func()
 	StateBytes   func(n int)
+	// Locked and Unlocked report locks taken and released through this service.
+	Locked   func(l *Lock)
+	Unlocked func(l *Lock)
 }
 
 // Options configures a Service.
@@ -549,7 +552,10 @@ func (s *Service) Lock(ctx context.Context, p Principal, req LockRequest) (*Lock
 		return nil, err
 	}
 	if held != nil {
-		return held, nil
+		l = held
+	}
+	if s.opts.Hooks.Locked != nil {
+		s.opts.Hooks.Locked(l)
 	}
 	return l, nil
 }
@@ -666,6 +672,9 @@ func (s *Service) Unlock(ctx context.Context, p Principal, key, lockID string, f
 	if err != nil {
 		s.record(ctx, p, action, key, "", lockID, err)
 		return nil, err
+	}
+	if removed != nil && s.opts.Hooks.Unlocked != nil {
+		s.opts.Hooks.Unlocked(removed)
 	}
 	return removed, nil
 }

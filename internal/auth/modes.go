@@ -17,6 +17,9 @@ import (
 type LoopbackSecret struct {
 	secret []byte
 	source string
+	// Identity, when set, replaces the username. The sidecar uses it so audit
+	// rows name the Snowflake user rather than a fixed loopback username.
+	Identity string
 }
 
 // NewLoopbackSecret generates the one-time password. source is the principal
@@ -37,6 +40,9 @@ func (l *LoopbackSecret) Authenticate(r *http.Request) (service.Principal, error
 	user, pass, ok := r.BasicAuth()
 	if !ok || subtle.ConstantTimeCompare([]byte(pass), l.secret) != 1 {
 		return service.Principal{}, ErrUnauthenticated
+	}
+	if l.Identity != "" {
+		return service.Principal{Name: l.Identity, Source: "snowflake"}, nil
 	}
 	return service.Principal{Name: user, Source: l.source}, nil
 }
