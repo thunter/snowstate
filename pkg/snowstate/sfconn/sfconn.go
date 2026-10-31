@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	sf "github.com/snowflakedb/gosnowflake"
+	sf "github.com/snowflakedb/gosnowflake/v2"
 	"github.com/youmark/pkcs8"
 )
 
@@ -133,6 +133,9 @@ func driverConfig(cfg Config) (sf.Config, error) {
 		Database:    cfg.Database,
 		Schema:      cfg.Schema,
 		Application: "snowstate",
+		// Driver v2.3 turned OCSP checking off by default. Keep v1's behaviour:
+		// check revocation, and fail open when the responder is unreachable.
+		OCSPFailOpen: sf.OCSPFailOpenTrue,
 		Params: map[string]*string{
 			"LOCK_TIMEOUT": &lockTimeout,
 			"QUERY_TAG":    &queryTag,

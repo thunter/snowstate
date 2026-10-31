@@ -50,7 +50,20 @@ func ConnConfig(cfg *config.Config) sfconn.Config {
 
 // OpenSnowflake opens the Snowflake store.
 func OpenSnowflake(ctx context.Context, cfg *config.Config, obs store.Observer) (*snowflake.Store, error) {
-	db, err := sfconn.Open(ctx, ConnConfig(cfg))
+	return openStore(ctx, cfg, ConnConfig(cfg), obs)
+}
+
+// OpenForProvisioning opens the store with no session schema, because Snowflake
+// refuses a login that names a schema which does not exist yet, and creating
+// that schema is what migrate is for. The store qualifies every name itself.
+func OpenForProvisioning(ctx context.Context, cfg *config.Config) (*snowflake.Store, error) {
+	conn := ConnConfig(cfg)
+	conn.Schema = ""
+	return openStore(ctx, cfg, conn, nil)
+}
+
+func openStore(ctx context.Context, cfg *config.Config, conn sfconn.Config, obs store.Observer) (*snowflake.Store, error) {
+	db, err := sfconn.Open(ctx, conn)
 	if err != nil {
 		return nil, err
 	}

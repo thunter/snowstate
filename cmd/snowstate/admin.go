@@ -25,15 +25,16 @@ import (
 	"github.com/thunter/snowstate/pkg/snowstate/store/snowflake"
 )
 
-// withStore loads config and runs fn with the Snowflake store. Admin commands
-// talk to Snowflake directly, not through the HTTP API (SPEC §8).
+// withStore loads config and runs fn with a store for provisioning commands
+// (migrate, project). Admin commands talk to Snowflake directly, not through
+// the HTTP API (SPEC §8).
 func withStore(cmd *cobra.Command, fn func(ctx context.Context, cfg *config.Config, st *snowflake.Store) error) error {
 	cfg, err := loadConfig(cmd, nil, config.ProfileAdmin)
 	if err != nil {
 		return err
 	}
 	ctx := cmd.Context()
-	st, err := app.OpenSnowflake(ctx, cfg, nil)
+	st, err := app.OpenForProvisioning(ctx, cfg)
 	if err != nil {
 		return err
 	}

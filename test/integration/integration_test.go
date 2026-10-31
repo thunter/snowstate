@@ -225,7 +225,7 @@ func TestInlineMaxBinds(t *testing.T) {
 		require.NoError(t, err)
 		return []byte(`{"version":4,"serial":1,"lineage":"l","pad":"` + hex.EncodeToString(blob) + `"}`)
 	}
-	const target = 8<<20 - 64<<10
+	const target = 15 << 19 // aim well inside the band: gzip output varies with the random input
 	n := 4 << 20
 	n = n * target / deflatedSize(t, build(n))
 	large := build(n)
@@ -914,4 +914,31 @@ func TestStandardModeConcurrency(t *testing.T) {
 		}
 	}
 	assert.Zero(t, unsafe, "rounds with more than one winner: standard mode is unsafe")
+}
+
+// §11: every statement is tagged snowstate:<op>:<request_id>, and query IDs
+// reach the request log.
+func TestQueryTagsAndIDs(t *testing.T) {
+	st := newStore(t)
+	s := newService(t, st)
+	ids1 := &store.QueryIDs{}
+	reqID := "req-" + ids.V4()
+	ctx := store.WithRequestMeta(context.Background(), store.RequestMeta{RequestID: reqID, QueryIDs: ids1})
+	k := key(t)
+	_, err := s.Put(ctx, alice, k, "", body(1), nil)
+	require.NoError(t, err)
+	assert.NotEmpty(t, ids1.List(), "query IDs are collected")
+
+	var tag string
+	require.Eventually(t, func() bool {
+		err := admin.QueryRowContext(context.Background(), fmt.Sprintf(
+			`SELECT QUERY_TAG FROM TABLE(%s.INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(RESULT_LIMIT => 1000))
+			 WHERE QUERY_ID = ? UNION ALL
+			 SELECT QUERY_TAG FROM TABLE(%s.INFORMATION_SCHEMA.QUERY_HISTORY(RESULT_LIMIT => 1000))
+			 WHERE QUERY_ID = ?`, os.Getenv("SNOWSTATE_IT_DATABASE"), os.Getenv("SNOWSTATE_IT_DATABASE")),
+			ids1.List()[0], ids1.List()[0]).Scan(&tag)
+		return err == nil
+	}, time.Minute, 2*time.Second)
+	assert.Contains(t, tag, reqID)
+	assert.True(t, strings.HasPrefix(tag, "snowstate_it:"), tag)
 }

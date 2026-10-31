@@ -282,3 +282,25 @@ func TestCLIMigrateAndDoctor(t *testing.T) {
 	require.Error(t, err, "doctor exits non-zero on failure")
 	assert.Contains(t, string(raw), "FAIL")
 }
+
+// The first thing a new user runs: migrate into a schema that does not exist.
+func TestCLIMigrateCreatesTheSchema(t *testing.T) {
+	bin := buildBinary(t)
+	fresh := "BACKEND_IT_NEW_" + strings.ToUpper(ids.V4()[:8])
+	dbName := os.Getenv("SNOWSTATE_IT_DATABASE")
+	t.Cleanup(func() {
+		_, err := admin.ExecContext(context.Background(), "DROP SCHEMA IF EXISTS "+dbName+"."+fresh)
+		assert.NoError(t, err)
+	})
+	run := func(args ...string) string {
+		t.Helper()
+		c := exec.Command(bin, args...)
+		c.Env = append(snowEnv(), "SNOWSTATE_SNOWFLAKE__SCHEMA="+fresh)
+		out, err := c.CombinedOutput()
+		require.NoError(t, err, string(out))
+		return string(out)
+	}
+	assert.Contains(t, run("migrate", "--dry-run"), "would apply")
+	assert.Contains(t, run("migrate"), "applied")
+	assert.Contains(t, run("doctor"), "PASS  privileges")
+}

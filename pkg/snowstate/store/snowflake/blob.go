@@ -4,13 +4,15 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"io"
 	"path"
 	"regexp"
 	"strings"
 	"time"
 
-	sf "github.com/snowflakedb/gosnowflake"
+	sf "github.com/snowflakedb/gosnowflake/v2"
 
 	"github.com/thunter/snowstate/pkg/snowstate/store"
 )
@@ -38,7 +40,7 @@ func (s *Store) PutBlob(ctx context.Context, key, versionID string, gz []byte) (
 	stmt := fmt.Sprintf("PUT 'file:///snowstate/%s' '%s/%s' AUTO_COMPRESS=FALSE SOURCE_COMPRESSION=GZIP OVERWRITE=TRUE",
 		path.Base(p), s.stage(key), path.Dir(p))
 	err := retry(ctx, func() error {
-		_, err := s.exec(sf.WithFileStream(ctx, bytes.NewReader(gz)), s.db, "blob_put", stmt)
+		_, err := s.exec(sf.WithFilePutStream(ctx, bytes.NewReader(gz)), s.db, "blob_put", stmt)
 		return err
 	})
 	if err != nil {
@@ -54,26 +56,32 @@ func (s *Store) GetBlob(ctx context.Context, key, p string) ([]byte, error) {
 	}
 	var out []byte
 	err := retry(ctx, func() error {
-		var buf bytes.Buffer
-		c := sf.WithFileTransferOptions(ctx, &sf.SnowflakeFileTransferOptions{GetFileToStream: true})
-		c = sf.WithFileGetStream(c, &buf)
-		stmt := fmt.Sprintf("GET '%s/%s' 'file:///tmp/'", s.stage(key), p)
-		rows, err := s.query(c, s.db, "blob_get", stmt)
-		if errorNumber(err) == codeNoFilesToGet {
-			return store.ErrNotFound
-		}
+		c, collect := s.tagged(ctx, "blob_get")
+		defer collect()
+		conn, err := s.db.Conn(c)
 		if err != nil {
 			return err
 		}
-		defer func() { _ = rows.Close() }()
-		if err := rows.Err(); err != nil {
+		defer func() { _ = conn.Close() }()
+		start := time.Now()
+		err = conn.Raw(func(raw any) error {
+			sc, ok := raw.(sf.SnowflakeConnection)
+			if !ok {
+				return errors.New("snowflake: driver connection has no DownloadStream")
+			}
+			r, err := sc.DownloadStream(c, s.stage(key), p)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = r.Close() }()
+			out, err = io.ReadAll(r)
 			return err
-		}
-		if buf.Len() == 0 {
+		})
+		s.observe("blob_get", start, err)
+		if errorNumber(err) == codeFileNotFound {
 			return store.ErrNotFound
 		}
-		out = buf.Bytes()
-		return nil
+		return err
 	})
 	return out, err
 }

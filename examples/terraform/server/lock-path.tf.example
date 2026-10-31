@@ -1,0 +1,11 @@
+# For proxies that reject the LOCK and UNLOCK verbs, use the /lock path.
+terraform {
+  backend "http" {
+    address        = "https://snowstate.example.com/v1/states/platform/network/prod"
+    lock_address   = "https://snowstate.example.com/v1/states/platform/network/prod/lock"
+    unlock_address = "https://snowstate.example.com/v1/states/platform/network/prod/lock"
+    lock_method    = "POST"
+    unlock_method  = "DELETE"
+    username       = "ci-platform"
+  }
+}

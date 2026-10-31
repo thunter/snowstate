@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	sf "github.com/snowflakedb/gosnowflake"
+	sf "github.com/snowflakedb/gosnowflake/v2"
 
 	"github.com/thunter/snowstate/pkg/snowstate/keys"
 	"github.com/thunter/snowstate/pkg/snowstate/store"

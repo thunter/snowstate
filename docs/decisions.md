@@ -55,7 +55,7 @@ ownership unless it adds the parameter by hand. This is the §4.3 rule applied l
 ## Scaffold decisions
 
 - Module path is `github.com/thunter/snowstate`, from the `origin` remote.
-- gosnowflake stays on **v1.19.1**, the newest v1.x, as §2 requires. A v2 line exists (v2.3.0) and is not used.
+- gosnowflake started on v1.19.1, the newest v1.x, as §2 requires. See D36 for the later move to v2.
 - `koanf` loads flag values with `k.Set` rather than through the `posflag` provider. That lets each command expose only
   the flags it needs, and the precedence stays flags > env > file.
 - Only `SNOWSTATE_*` variables containing `__` are config keys, so `SNOWSTATE_KEY`, `SNOWSTATE_TOKEN_PEPPER` and
@@ -115,7 +115,7 @@ command is printed.
 
 ## Snowflake verification (M3)
 
-Verified on account `IK96809`, region `AWS_AP_SOUTHEAST_6`, Snowflake 10.39.101, gosnowflake v1.19.1.
+Verified on account `IK96809`, region `AWS_AP_SOUTHEAST_6`, Snowflake 10.39.101. First run on gosnowflake v1.19.1, and re-run in full on v2.3.0 (D36).
 
 | VERIFY | Outcome |
 |---|---|
@@ -128,10 +128,10 @@ Verified on account `IK96809`, region `AWS_AP_SOUTHEAST_6`, Snowflake 10.39.101,
 | Concurrency test, hybrid (§12.3) | **Passed**: exactly one winner in each of 10 rounds of 25 goroutines. |
 | Standard-table `MERGE` with binds | Needs explicit casts (`?::VARCHAR`), used throughout. |
 | WIF field names (§5.2) | `Authenticator = AuthTypeWorkloadIdentityFederation`, `WorkloadIdentityProvider`, `Token`. Exercised in M6.5. |
-| Stream PUT/GET | `WithFileStream` for PUT; `WithFileTransferOptions{GetFileToStream:true}` + `WithFileGetStream` for GET. The object name comes from the base name of the file URL. A GET that matches nothing returns driver error 264004. |
+| Stream PUT/GET | `WithFileStream` for PUT; `WithFileTransferOptions{GetFileToStream:true}` + `WithFileGetStream` for GET. The object name comes from the base name of the file URL. With driver v2, GET uses `SnowflakeConnection.DownloadStream`, and a missing object is error 264006 (see D36). |
 
 Error numbers acted on (`store/snowflake/errors.go`): 200001 (duplicate key), 200010 and 200012 (hybrid row contention),
-264004 (no files to GET), 2003 and 3001 (access), 390114 (session expired), 606 (warehouse), 625/628/630 (timeouts).
+264006 (no file to GET), 2003 and 3001 (access), 390114 (session expired), 606 (warehouse), 625/628/630 (timeouts).
 
 **D15. Inline blobs are zlib, not gzip.** §6.2 said to switch encoding if gzip did not work. Snowflake's `COMPRESS` supports
 `SNAPPY`, `ZLIB`, `ZSTD` and `BZ2`. Go's `compress/zlib` output (RFC 1950) decompresses unchanged, with no framing
@@ -243,3 +243,32 @@ step on a table with no enforced key. `getLock` and `ListLocks` filter on `LOCK_
 **D35. `migrate` always probes hybrid support.** In hybrid mode, if the probe fails it stops with guidance rather than
 failing later on `CREATE HYBRID TABLE`. In standard mode it reports when hybrid would be available. A dry run skips the
 probe because it creates and drops a table.
+
+## M6 decisions
+
+**D36. gosnowflake v2.3.0 instead of v1.x (deviates from §2).** `govulncheck` reported GO-2026-6665 (CVE-2026-86597, the
+driver writes sensitive information to logs) as reachable. It covers the whole v1 module path, and the fix shipped in
+v2.2.0. §2 asks for the latest v1.x, but §10.7 requires `govulncheck` to pass and the project forbids logging secrets, so
+security wins. The full integration suite was re-run on v2. API changes: `WithFilePutStream` replaces `WithFileStream`,
+and blob reads use `SnowflakeConnection.DownloadStream`, which streams rather than buffering.
+
+Driver v2.3 also turned OCSP checks off by default. `sfconn` sets `OCSPFailOpen: OCSPFailOpenTrue`, keeping v1's posture
+(check revocation, fail open if the responder is unreachable).
+
+Transitive upgrades for reachable or imported advisories: `aws-sdk-go-v2/service/s3` and `eventstream` (GO-2026-5764),
+`golang.org/x/net` (GO-2026-66xx, 68xx), `go.opentelemetry.io/otel` (GO-2026-5506).
+
+`govulncheck` still lists GO-2026-5932 (`golang.org/x/crypto/openpgp` is unmaintained) in a required module. There is no
+fix, and neither this code nor its imports call it, so the scan passes.
+
+**D37. Release builds are a Makefile target, not goreleaser.** `make release` cross-compiles the six platforms and writes
+`checksums.txt`, which avoids a tool §2 does not list.
+
+**D38. Docker was not available on the build machine**, so the image has not been built or run locally. CI builds it.
+
+**D39. Runbook order for recovering `errored.tfstate`.** §8.4 says to `state push` and then release the lock. That cannot
+work: `state push` must take the lock, and the crashed run still holds it. The runbook releases first, then pushes.
+
+**D40. `migrate` and `project` connect without a session schema.** Following the README literally found that Snowflake
+rejects a login naming a schema that does not exist (390201), so a first `migrate` could never run. The store qualifies
+every name, so provisioning commands simply leave the session schema unset. `TestCLIMigrateCreatesTheSchema` covers it.

@@ -8,12 +8,28 @@ LDFLAGS := -s -w \
 	-X github.com/thunter/snowstate/internal/buildinfo.Date=$(DATE)
 export CGO_ENABLED ?= 0
 
-.PHONY: all build lint test cover e2e integration vuln tools clean
+PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
+
+.PHONY: all build release image lint test cover e2e integration vuln tools clean
 
 all: lint test build
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/snowstate ./cmd/snowstate
+
+# Cross-compiles every platform into dist/ and writes checksums.txt.
+release:
+	rm -rf dist && mkdir -p dist
+	@for p in $(PLATFORMS); do \
+		os=$${p%/*}; arch=$${p#*/}; ext=; [ "$$os" = windows ] && ext=.exe; \
+		echo "building $$os/$$arch"; \
+		GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
+			-o "dist/snowstate_$${os}_$${arch}$$ext" ./cmd/snowstate || exit 1; \
+	done
+	cd dist && (command -v sha256sum >/dev/null && sha256sum snowstate_* || shasum -a 256 snowstate_*) > checksums.txt
+
+image:
+	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) -t snowstate:$(VERSION) .
 
 lint:
 	golangci-lint run ./...

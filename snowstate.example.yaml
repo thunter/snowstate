@@ -1,0 +1,83 @@
+# snowstate configuration. Every key is shown with its default.
+# Precedence: flags > environment > this file. Environment variables use the
+# SNOWSTATE_ prefix with "__" for nesting: SNOWSTATE_SNOWFLAKE__ACCOUNT.
+
+server:
+  listen: ":8443"
+  request_timeout: 60s         # per request, propagated to all SQL
+  read_timeout: 5m             # long enough for large state bodies
+  write_timeout: 5m
+  shutdown_timeout: 30s        # how long SIGTERM drains in-flight requests
+  trusted_proxies: []          # CIDRs allowed to set X-Forwarded-For
+
+tls:
+  cert_file: ""                # required unless listen is loopback or disable_for_testing
+  key_file: ""
+  client_ca_file: ""           # enables mTLS
+  disable_for_testing: false
+
+auth:
+  mode: token                  # token | loopback-secret | none. The last two are loopback-only.
+  pepper_env: SNOWSTATE_TOKEN_PEPPER   # names the variable holding a 32+ byte secret
+  mtls_principal_from_cn: false
+  failed_per_minute: 10        # failed logins per IP before 429. 0 disables.
+
+snowflake:
+  account: ""                  # orgname-accountname
+  user: ""
+  role: SNOWSTATE_SVC
+  warehouse: SNOWSTATE_WH
+  database: TF_STATE
+  schema: BACKEND
+  auth: keypair                # keypair | pat | oauth | externalbrowser | password | workload_identity
+  wif:
+    provider: oidc             # oidc | aws | azure | gcp
+    token_source: github       # github | file | env
+    audience: snowflakecomputing.com
+    token_file_path: ""
+    token_env: ""
+  client_session_keep_alive: true
+  private_key_path: ""
+  private_key_pem_env: SNOWSTATE_SNOWFLAKE_PRIVATE_KEY_PEM    # names a variable holding a PEM key
+  private_key_passphrase_env: ""                              # names a variable holding the passphrase
+  token_env: SNOWSTATE_SNOWFLAKE_TOKEN                        # for pat and oauth
+  token_file_path: ""                                         # oauth, re-read on change
+  password_env: SNOWSTATE_SNOWFLAKE_PASSWORD
+  query_tag: snowstate
+  lock_timeout: 30s            # session LOCK_TIMEOUT; Snowflake's own default is 12 hours
+  pool: { max_open: 10, max_idle: 2, conn_max_lifetime: 1h }
+
+tenancy:
+  mode: shared                 # shared | schema_per_project
+  control_schema: CONTROL      # used by schema_per_project
+
+locking:
+  mode: hybrid                 # hybrid | standard (experimental)
+  standard_mode_acknowledged: false
+  allow_force_unlock: true     # applies to the state API; operators can always use the admin paths
+  ttl: 0s                      # 0 disables. Terraform has no heartbeat, so leave this off.
+
+state:
+  require_lock_for_write: false
+  reject_serial_regression: false
+
+storage:
+  inline_max_bytes: 8388608    # compressed size that stays in the table
+
+limits:
+  max_state_bytes: 268435456   # uncompressed
+
+retention:
+  keep_versions: 100           # newest kept per state; 0 means unlimited
+  keep_days: 0                 # also keep everything newer than this
+  deleted_days: 30             # how long soft-deleted states survive
+
+audit:
+  log_reads: true
+
+metrics:
+  listen: ""                   # empty serves /metrics on the main listener
+
+log:
+  level: info
+  format: json

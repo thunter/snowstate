@@ -1,0 +1,38 @@
+name: release
+on:
+  push: { tags: ['v*.*.*'] }
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write # keyless cosign signatures
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - run: make release VERSION=${{ github.ref_name }}
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign the checksums
+        run: cosign sign-blob --yes --bundle dist/checksums.txt.sigstore.json dist/checksums.txt
+      - name: Publish the release
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+      - name: Publish the image
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          make image VERSION="$GITHUB_REF_NAME"
+          docker tag "snowstate:$GITHUB_REF_NAME" "$image:$GITHUB_REF_NAME"
+          docker tag "snowstate:$GITHUB_REF_NAME" "$image:v1"
+          docker push "$image:$GITHUB_REF_NAME"
+          docker push "$image:v1"
+        env: { GH_TOKEN: "${{ github.token }}" }
+      - name: Move the v1 tag for action/setup
+        run: |
+          git tag -f v1
+          git push -f origin v1

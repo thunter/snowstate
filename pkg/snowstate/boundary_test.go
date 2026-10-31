@@ -29,7 +29,7 @@ func TestImportBoundaries(t *testing.T) {
 			if !strings.HasSuffix(fields[0], "/sfconn") {
 				assert.NotEqual(t, "net/http", imp, "%s imports net/http", fields[0])
 			}
-			if imp == "github.com/snowflakedb/gosnowflake" {
+			if imp == "github.com/snowflakedb/gosnowflake/v2" {
 				assert.Contains(t, []string{
 					"github.com/thunter/snowstate/pkg/snowstate/store/snowflake",
 					"github.com/thunter/snowstate/pkg/snowstate/sfconn",
@@ -41,7 +41,7 @@ func TestImportBoundaries(t *testing.T) {
 	core := run(t, "go", "list", "-deps",
 		"../../pkg/snowstate/service", "../../pkg/snowstate/keys", "../../pkg/snowstate/store/memory")
 	assert.NotContains(t, core, "net/http", "the core must stay free of net/http, even transitively")
-	assert.NotContains(t, core, "github.com/snowflakedb/gosnowflake")
+	assert.NotContains(t, core, "github.com/snowflakedb/gosnowflake/v2")
 }
 
 func run(t *testing.T, name string, args ...string) []string {

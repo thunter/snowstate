@@ -7,4 +7,5 @@
 - `snowstate exec` sidecar mode.
 - Snowflake store: hybrid locking, versioned writes, inline and stage blobs, audit, inventory view.
 - `migrate`, `doctor`, token, state, lock, project and gc commands, and the admin HTTP API.
+- Dockerfile, Kubernetes example, multi-arch release build, and operator documentation.
 - Structured logs, Prometheus metrics, health and readiness endpoints.

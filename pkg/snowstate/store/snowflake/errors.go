@@ -8,7 +8,7 @@ import (
 	"net"
 	"net/url"
 
-	sf "github.com/snowflakedb/gosnowflake"
+	sf "github.com/snowflakedb/gosnowflake/v2"
 
 	"github.com/thunter/snowstate/pkg/snowstate/store"
 )
@@ -30,8 +30,8 @@ const (
 	codeTxLockContention = 200010
 	// codeTooManyLockWaiters: too many transactions queued on one row.
 	codeTooManyLockWaiters = 200012
-	// codeNoFilesToGet: GET found nothing at the stage location.
-	codeNoFilesToGet = 264004
+	// codeFileNotFound: DownloadStream found nothing at the stage location.
+	codeFileNotFound = 264006
 )
 
 func errorNumber(err error) int {

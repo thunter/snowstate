@@ -2,6 +2,7 @@ name: ci
 on:
   push: { branches: [main] }
   pull_request:
+  workflow_dispatch:
 
 permissions: { contents: read }
 
@@ -20,8 +21,17 @@ jobs:
       - uses: actions/setup-go@v5
         with: { go-version-file: go.mod }
       - run: make test
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: make vuln
   e2e:
     strategy:
+      fail-fast: false
       matrix: { os: [ubuntu-latest, macos-latest] }
     runs-on: ${{ matrix.os }}
     steps:
@@ -33,3 +43,45 @@ jobs:
           path: .tools
           key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/tools.sh') }}
       - run: make e2e
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - run: make release
+      - uses: actions/upload-artifact@v4
+        with: { name: binaries, path: dist/, retention-days: 3 }
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make image VERSION=ci
+      - name: Runs as non-root on a read-only filesystem
+        run: |
+          test "$(docker inspect -f '{{.Config.User}}' snowstate:ci)" = "65532:65532"
+          docker run --rm --read-only snowstate:ci version
+  integration:
+    # Runs on manual dispatch, or on main when the secret is present.
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      SNOWSTATE_IT_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+      SNOWSTATE_IT_USER: ${{ vars.SNOWFLAKE_USER }}
+      SNOWSTATE_IT_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
+      SNOWSTATE_IT_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+      SNOWSTATE_IT_DATABASE: ${{ vars.SNOWFLAKE_DATABASE }}
+      SNOWSTATE_IT_AUTH: keypair
+      SNOWSTATE_IT_PRIVATE_KEY_PATH: ${{ github.workspace }}/.it-key.p8
+      HAS_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        if: env.HAS_KEY == 'true'
+      - uses: actions/setup-go@v5
+        if: env.HAS_KEY == 'true'
+        with: { go-version-file: go.mod }
+      - if: env.HAS_KEY == 'true'
+        run: printf '%s' "$KEY" > .it-key.p8 && chmod 600 .it-key.p8
+        env: { KEY: "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" }
+      - if: env.HAS_KEY == 'true'
+        run: make tools integration

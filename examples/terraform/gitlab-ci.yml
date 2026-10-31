@@ -1,0 +1,24 @@
+# GitLab CI with key-pair auth. Store the key as a masked, file-less variable
+# named SNOWSTATE_SNOWFLAKE_PRIVATE_KEY_PEM.
+variables:
+  SNOWSTATE_KEY: platform/network/prod
+  SNOWSTATE_SNOWFLAKE__ACCOUNT: myorg-myaccount
+  SNOWSTATE_SNOWFLAKE__USER: GITLAB_PLATFORM
+  SNOWSTATE_SNOWFLAKE__AUTH: keypair
+
+plan:
+  stage: plan
+  script:
+    - snowstate exec -- terraform init -input=false
+    - snowstate exec -- terraform plan -input=false -out=tfplan
+  artifacts:
+    paths: [tfplan]
+    expire_in: 1 day
+
+apply:
+  stage: deploy
+  when: manual
+  resource_group: platform-network-prod # queues runs, as GitHub concurrency does
+  script:
+    - snowstate exec -- terraform init -input=false
+    - snowstate exec -- terraform apply -input=false tfplan
