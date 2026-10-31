@@ -60,3 +60,36 @@ ownership unless it adds the parameter by hand. This is the §4.3 rule applied l
   the flags it needs, and the precedence stays flags > env > file.
 - Only `SNOWSTATE_*` variables containing `__` are config keys, so `SNOWSTATE_KEY`, `SNOWSTATE_TOKEN_PEPPER` and
   `SNOWSTATE_IT_*` cannot leak into the config tree.
+
+## M1 decisions
+
+**D3. OpenTofu encrypted states do not need `version`.** §4.3 rejects a body without `version`, but §10.8 requires
+encrypted states to work, and OpenTofu's encrypted payload is
+`{"serial":N,"lineage":"…","meta":…,"encrypted_data":…,"encryption_version":"v0"}`
+(`internal/encryption/base.go:107`, `state.go:68-69`). A body with `encryption_version` is exempt from the `version`
+check. `serial` and `lineage` are still required.
+
+**D4. `Lock` audit rows share the lock's transaction.** §6.5 shows acquire as an autocommit `INSERT`, while §6.1 says
+LOCK audit rows are written in the same transaction as the change. §6.1 is the stronger guarantee, so acquire runs as
+`BEGIN; INSERT LOCKS; INSERT AUDIT_LOG; COMMIT`.
+
+**D5. `store.Tx` keeps the rules in `service`.** The service runs the §6.4 steps as a closure inside `Store.InTx`, so
+both stores get identical logic and neither contains rules.
+
+**D6. `*` in a scope pattern crosses `/`.** `platform/*` has to cover `platform/network/prod`, as §5.1's examples
+intend, so `path.Match` semantics would not work. `?` does not match `/`.
+
+**D7. mTLS principals get their scopes from `TOKENS`.** §5.1 maps a CN to a principal but does not say where its scopes
+come from. They are the union of that principal's live tokens, so deny-by-default still holds.
+
+**D8. `ListStates`-style endpoints authorize with an empty key.** The authorizer treats `""` as "has this permission on
+any key", and results are then filtered per key.
+
+**D9. Test store persistence.** `--store=memory` also honours `SNOWSTATE_TEST_STORE_FILE`, which snapshots the store to
+JSON after each change. Separate `exec` processes need this to share state in scenarios 9 and 10, and it is how e2e
+tests read the audit log. It sits behind the same `SNOWSTATE_ALLOW_TEST_STORE=1` gate.
+
+**D10. Additional typed errors.** `ErrInvalidLock`, `ErrSerialRegression` and `ErrCommitUnknown` extend the list in §3.
+
+E2E findings: `terraform state pull` prints through a helper that appends one newline, so byte comparison must allow
+for it. `state push` makes the client bump `serial` again when it persists.

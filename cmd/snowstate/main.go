@@ -25,6 +25,7 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.PersistentFlags().String("config", "", "config file (default ./snowstate.yaml if present)")
+	root.AddCommand(newServeCmd())
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print version information",
