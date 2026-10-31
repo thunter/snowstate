@@ -89,6 +89,7 @@ the default workspace is the literal segment `default`: `platform/network/defaul
 
 | | |
 |---|---|
+| [`docs/tutorial-snowflake-database.md`](docs/tutorial-snowflake-database.md) | Tutorial: create a database with the Snowflake provider |
 | [`docs/operator-guide.md`](docs/operator-guide.md) | Bootstrap, deployment, TLS, tokens, retention, cost, upgrades |
 | [`docs/github-actions.md`](docs/github-actions.md) | Workload identity, the setup action, plan and apply across jobs |
 | [`docs/runbook.md`](docs/runbook.md) | Stuck locks, outages, bad states, key rotation |
