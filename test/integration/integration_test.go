@@ -793,3 +793,125 @@ func TestSchemaPerProjectIsolation(t *testing.T) {
 		require.Error(t, err, stmt)
 	}
 }
+
+func standardStore(t *testing.T) *snowflake.Store {
+	t.Helper()
+	ctx := context.Background()
+	name := "BACKEND_IT_STD_" + strings.ToUpper(ids.V4()[:8])
+	dbName := os.Getenv("SNOWSTATE_IT_DATABASE")
+	_, err := admin.ExecContext(ctx, "CREATE SCHEMA "+dbName+"."+name)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, err := admin.ExecContext(ctx, "DROP SCHEMA IF EXISTS "+dbName+"."+name)
+		assert.NoError(t, err)
+	})
+	db, err := sfconn.Open(ctx, connConfig(name))
+	require.NoError(t, err)
+	st := snowflake.New(snowflake.Options{
+		DB: db, Database: dbName, Schema: name, QueryTag: "snowstate_it", LockMode: snowflake.LockStandard,
+	})
+	t.Cleanup(func() { _ = st.Close() })
+	res, err := st.Migrate(ctx, false)
+	require.NoError(t, err)
+	assert.True(t, res.HybridChecked)
+	return st
+}
+
+func TestStandardModeLockLifecycle(t *testing.T) {
+	st := standardStore(t)
+	s := newService(t, st)
+	ctx := context.Background()
+	k := key(t)
+
+	hybrid, err := st.LocksAreHybrid(ctx)
+	require.NoError(t, err)
+	assert.False(t, hybrid)
+
+	for range 2 { // the second pass reuses the cleared row
+		l, err := s.Lock(ctx, alice, httpLock(k, "L1"))
+		require.NoError(t, err)
+		assert.Equal(t, "L1", l.LockID)
+
+		_, err = s.Lock(ctx, alice, httpLock(k, "L1"))
+		require.NoError(t, err, "same ID is idempotent")
+
+		_, err = s.Lock(ctx, alice, httpLock(k, "L2"))
+		var locked *store.ErrLocked
+		require.ErrorAs(t, err, &locked)
+
+		_, err = s.Put(ctx, alice, k, "", body(1), nil)
+		require.ErrorAs(t, err, &locked)
+
+		_, err = s.Unlock(ctx, alice, k, "L2", false)
+		var mismatch *store.ErrLockMismatch
+		require.ErrorAs(t, err, &mismatch)
+
+		removed, err := s.Unlock(ctx, alice, k, "L1", false)
+		require.NoError(t, err)
+		require.NotNil(t, removed)
+
+		cur, err := st.GetLock(ctx, k)
+		require.NoError(t, err)
+		assert.Nil(t, cur, "a cleared row reads as no lock")
+	}
+
+	listed, err := st.ListLocks(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, listed, "cleared rows are not listed")
+}
+
+// raceRound runs 25 racers and returns winners and unexpected errors.
+func raceRound(s *service.Service, k string, round int) (wins int32, errs []string) {
+	ctx := context.Background()
+	var won atomic.Int32
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for g := range 25 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := s.Lock(ctx, alice, httpLock(k, fmt.Sprintf("r%d-g%d", round, g)))
+			var locked *store.ErrLocked
+			switch {
+			case err == nil:
+				won.Add(1)
+			case !errors.As(err, &locked):
+				mu.Lock()
+				errs = append(errs, err.Error())
+				mu.Unlock()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	return won.Load(), errs
+}
+
+// §6.5 and §12.3: the result of this test is recorded in decisions.md. It
+// reports winners per round rather than stopping, because the point is to
+// measure. Two winners in any round means standard mode is unsafe.
+func TestStandardModeConcurrency(t *testing.T) {
+	st := standardStore(t)
+	s := newService(t, st)
+	ctx := context.Background()
+	reused := key(t)
+
+	unsafe := 0
+	for round := range 10 {
+		for name, k := range map[string]string{"reused": reused, "fresh": key(t) + fmt.Sprint(round)} {
+			wins, errs := raceRound(s, k, round)
+			t.Logf("round %d %s: winners=%d errors=%d", round, name, wins, len(errs))
+			if len(errs) > 0 {
+				t.Logf("  first error: %s", errs[0])
+			}
+			if wins > 1 {
+				unsafe++
+			}
+			_, err := s.Unlock(ctx, alice, k, "", true)
+			require.NoError(t, err)
+		}
+	}
+	assert.Zero(t, unsafe, "rounds with more than one winner: standard mode is unsafe")
+}

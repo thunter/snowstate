@@ -48,7 +48,7 @@ func newMigrateCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
-			return withStore(cmd, func(ctx context.Context, _ *config.Config, st *snowflake.Store) error {
+			return withStore(cmd, func(ctx context.Context, cfg *config.Config, st *snowflake.Store) error {
 				res, err := st.Migrate(ctx, dryRun)
 				if err != nil {
 					return err
@@ -56,6 +56,11 @@ func newMigrateCmd() *cobra.Command {
 				verb := "applied"
 				if dryRun {
 					verb = "would apply"
+				}
+				if res.HybridChecked && res.HybridAvailable && cfg.Locking.Mode == snowflake.LockStandard {
+					fmt.Fprintln(cmd.OutOrStdout(), "hybrid tables are available: consider locking.mode=hybrid")
+				} else if res.HybridChecked {
+					fmt.Fprintln(cmd.OutOrStdout(), "hybrid tables: available =", res.HybridAvailable)
 				}
 				if len(res.Applied) == 0 {
 					fmt.Fprintln(cmd.OutOrStdout(), "schema is up to date")

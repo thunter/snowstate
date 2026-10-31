@@ -539,3 +539,24 @@ func TestLockReleaseAsksFirst(t *testing.T) {
 	require.NoError(t, err, out)
 	assert.Contains(t, out, "released lock L1")
 }
+
+func TestStandardModeIsGated(t *testing.T) {
+	base := append(baseEnv(), "SNOWSTATE_ALLOW_TEST_STORE=1", "SNOWSTATE_LOCKING__MODE=standard")
+
+	cmd := exec.Command(binary, "serve", "--store=memory", "--listen=127.0.0.1:0", "--auth-mode=none")
+	cmd.Env = base
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, "refused without the acknowledgement")
+	assert.Contains(t, string(out), "standard_mode_acknowledged")
+
+	cmd = exec.Command(binary, "exec", "--store=memory", "--key=a/b", "--", "true")
+	cmd.Env = base
+	out, err = cmd.CombinedOutput()
+	require.Error(t, err, "exec is gated too")
+	assert.Contains(t, string(out), "standard_mode_acknowledged")
+
+	cmd = exec.Command(binary, "exec", "--store=memory", "--key=a/b", "--", "true")
+	cmd.Env = append(base, "SNOWSTATE_LOCKING__STANDARD_MODE_ACKNOWLEDGED=true")
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+}

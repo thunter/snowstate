@@ -133,11 +133,47 @@ func (t *txn) InsertAudit(ctx context.Context, e *store.AuditEvent) error {
 	return t.s.insertAudit(ctx, t.tx, t.s.schemaFor(e.Key), []store.AuditEvent{*e})
 }
 
-// Standard mode is added in M5.
-func (t *txn) insertLockStandard(context.Context, *store.Lock) (bool, error) {
-	return false, errStandardUnsupported
+// insertLockStandard is the EXPERIMENTAL acquire from SPEC §6.5: seed an empty
+// row, claim it only if unclaimed, then confirm the claim. Standard tables have
+// no enforced primary key, so see decisions.md before relying on this.
+func (t *txn) insertLockStandard(ctx context.Context, l *store.Lock) (bool, error) {
+	table := t.s.dataTable(l.Key, "LOCKS")
+	if _, err := t.s.exec(ctx, t.tx, "lock_seed",
+		"MERGE INTO "+table+` t USING (SELECT ?::VARCHAR AS STATE_KEY) s ON t.STATE_KEY = s.STATE_KEY
+		WHEN NOT MATCHED THEN INSERT (STATE_KEY) VALUES (s.STATE_KEY)`, l.Key); err != nil {
+		return false, err
+	}
+	args := lockArgs(l)
+	claim := append(args[1:len(args):len(args)], l.Key)
+	if _, err := t.s.exec(ctx, t.tx, "lock_claim",
+		"UPDATE "+table+` SET LOCK_ID = ?, SOURCE = ?, OPERATION = ?, WHO = ?, INFO = ?, TF_VERSION = ?,
+			LOCK_PATH = ?, LOCK_CREATED = TO_TIMESTAMP_TZ(?), LOCK_INFO = ?,
+			ACQUIRED_AT = TO_TIMESTAMP_TZ(?), ACQUIRED_BY = ?
+		WHERE STATE_KEY = ? AND LOCK_ID IS NULL`, claim...); err != nil {
+		return false, err
+	}
+	cur, err := t.s.getLock(ctx, t.tx, l.Key, "")
+	if err != nil {
+		return false, err
+	}
+	return cur != nil && cur.LockID == l.LockID, nil
 }
 
-func (t *txn) deleteLockStandard(context.Context, string, string) (bool, error) {
-	return false, errStandardUnsupported
+// deleteLockStandard clears the row rather than deleting it, so the next
+// acquire does not have to race on the seed MERGE.
+func (t *txn) deleteLockStandard(ctx context.Context, key, lockID string) (bool, error) {
+	stmt := "UPDATE " + t.s.dataTable(key, "LOCKS") + ` SET LOCK_ID = NULL, SOURCE = NULL, OPERATION = NULL,
+		WHO = NULL, INFO = NULL, TF_VERSION = NULL, LOCK_PATH = NULL, LOCK_CREATED = NULL, LOCK_INFO = NULL,
+		ACQUIRED_BY = NULL WHERE STATE_KEY = ? AND LOCK_ID IS NOT NULL`
+	args := []any{key}
+	if lockID != "" {
+		stmt += " AND LOCK_ID = ?"
+		args = append(args, lockID)
+	}
+	res, err := t.s.exec(ctx, t.tx, "lock_clear", stmt, args...)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }

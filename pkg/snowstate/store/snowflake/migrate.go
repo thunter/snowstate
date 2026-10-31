@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -81,7 +82,17 @@ func (s *Store) render(script string) string {
 // MigrateResult lists what ran, or would run in a dry run.
 type MigrateResult struct {
 	Applied []string
+	// HybridChecked and HybridAvailable report the §6.5 detection. It needs a
+	// schema to work in, so a dry run on an empty account does not do it.
+	HybridChecked   bool
+	HybridAvailable bool
 }
+
+// ErrNoHybridTables explains what to do when hybrid tables are unavailable.
+var ErrNoHybridTables = errors.New("hybrid tables are not available in this account or region. " +
+	"Locking needs them for correctness. Check the cloud and region (they are GA on AWS and Azure, preview on GCP), " +
+	"or accept the risk of the experimental fallback by setting locking.mode=standard and " +
+	"locking.standard_mode_acknowledged=true")
 
 // Migrate creates and upgrades every schema. It is idempotent and forward-only.
 func (s *Store) Migrate(ctx context.Context, dryRun bool) (*MigrateResult, error) {
@@ -95,6 +106,9 @@ func (s *Store) Migrate(ctx context.Context, dryRun bool) (*MigrateResult, error
 			return nil, err
 		}
 		if err := s.ensureLedger(ctx); err != nil {
+			return nil, err
+		}
+		if err := s.checkHybrid(ctx, res); err != nil {
 			return nil, err
 		}
 	}
@@ -120,6 +134,20 @@ func (s *Store) Migrate(ctx context.Context, dryRun bool) (*MigrateResult, error
 		return nil, err
 	}
 	return res, nil
+}
+
+// checkHybrid probes for hybrid tables on every run, including with standard
+// locking, so an operator on the fallback learns when they could leave it.
+func (s *Store) checkHybrid(ctx context.Context, res *MigrateResult) error {
+	ok, err := s.HybridSupported(ctx)
+	if err != nil {
+		return err
+	}
+	res.HybridChecked, res.HybridAvailable = true, ok
+	if !ok && s.opts.LockMode == LockHybrid {
+		return ErrNoHybridTables
+	}
+	return nil
 }
 
 // MigrateSchema creates one project schema and upgrades it.

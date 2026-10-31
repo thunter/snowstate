@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"path"
 	"regexp"
@@ -15,8 +14,6 @@ import (
 
 	"github.com/thunter/snowstate/pkg/snowstate/store"
 )
-
-var errStandardUnsupported = errors.New("snowflake: locking.mode=standard is not available")
 
 // blobPathRE guards the paths spliced into PUT, GET and REMOVE. Keys and
 // version IDs already fit it; this keeps a corrupt row from reaching SQL.

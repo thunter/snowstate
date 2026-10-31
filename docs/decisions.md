@@ -220,3 +220,26 @@ role and grant it, and `SNOWSTATE_DEV` also holds warehouse `USAGE` without `GRA
 (no grants) is what ran. Whether `FOR UPDATE` on `LOCKS` needs more than `SELECT, INSERT, DELETE` is therefore also
 unconfirmed. To run it, an admin creates the roles per `dev_setup.md` §3.2 and sets `SNOWSTATE_IT_ROLE_A` and
 `SNOWSTATE_IT_ROLE_B`.
+
+## M5: standard-mode locking
+
+**Concurrency result (§6.5, §12.3).** `TestStandardModeConcurrency` ran 25 goroutines for 10 rounds on a reused row and
+10 rounds on a fresh key, on the same account as above. **Every one of the 20 rounds had exactly one winner.** Two winners
+never occurred, so standard mode is not marked unsafe and remains available behind `locking.standard_mode_acknowledged`.
+
+This is one measurement, not a proof, and the mode stays EXPERIMENTAL for these reasons:
+
+- **The primary key is not enforced.** Safety comes only from table-level DML locks serialising the transaction. Whether
+  a blocked `UPDATE` re-evaluates its predicate is not documented behaviour, and this test only observes that it held.
+- **The lock is on the whole `LOCKS` table.** Rounds took about 18 s against about 3.8 s for hybrid, and four racers per
+  round hit `LOCK_TIMEOUT` (error 625), returning `503`. That is safe, but unrelated states contend with each other.
+- **The write fence is weaker.** `FOR UPDATE` is hybrid-only, so D19's protection does not apply.
+
+Hybrid remains the only mode recommended for production.
+
+**D34. Standard mode clears lock rows rather than deleting them**, so later acquires skip the seed `MERGE`, the riskiest
+step on a table with no enforced key. `getLock` and `ListLocks` filter on `LOCK_ID IS NOT NULL`.
+
+**D35. `migrate` always probes hybrid support.** In hybrid mode, if the probe fails it stops with guidance rather than
+failing later on `CREATE HYBRID TABLE`. In standard mode it reports when hybrid would be available. A dry run skips the
+probe because it creates and drops a table.
