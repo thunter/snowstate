@@ -69,9 +69,13 @@ jobs:
         with: { version: ci }
         env: { BASE_URL: "file://${{ github.workspace }}/dist" }
       - run: snowstate exec --store=memory -- terraform -chdir="$FIXTURE" init -input=false
-      - run: snowstate exec --store=memory -- terraform -chdir="$FIXTURE" apply -input=false tfplan
-      - name: Check the audit detail and the step summary
+      # $GITHUB_STEP_SUMMARY is a different file in each step, so the summary has
+      # to be checked in the step that wrote it.
+      - name: Apply, and check the step summary
         run: |
-          jq -e --arg run "$GITHUB_RUN_ID" '[.Audit[] | select(.Action == "PUT" and .Detail.run_id == $run)] | length > 0' store.json
+          snowstate exec --store=memory -- terraform -chdir="$FIXTURE" apply -input=false tfplan
           grep -q 'snowstate: `platform/network/ci`' "$GITHUB_STEP_SUMMARY"
           grep -q 'Lock released' "$GITHUB_STEP_SUMMARY"
+      - name: Check the audit detail
+        run: |
+          jq -e --arg run "$GITHUB_RUN_ID" '[.Audit[] | select(.Action == "PUT" and .Detail.run_id == $run)] | length > 0' store.json
