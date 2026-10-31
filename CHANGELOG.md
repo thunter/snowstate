@@ -8,4 +8,5 @@
 - Snowflake store: hybrid locking, versioned writes, inline and stage blobs, audit, inventory view.
 - `migrate`, `doctor`, token, state, lock, project and gc commands, and the admin HTTP API.
 - Dockerfile, Kubernetes example, multi-arch release build, and operator documentation.
+- GitHub Actions: workload identity federation, CI context in audit rows, step summaries, `action/setup`.
 - Structured logs, Prometheus metrics, health and readiness endpoints.

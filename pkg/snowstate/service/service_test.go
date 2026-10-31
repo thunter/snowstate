@@ -617,7 +617,8 @@ func TestAuditBufferFlushesOnSizeAndSurvivesFailure(t *testing.T) {
 	for range 100 {
 		_, _ = s.Get(context.Background(), alice, testKey)
 	}
-	require.Eventually(t, func() bool { return s.AuditDepth() == 0 }, 2*time.Second, 5*time.Millisecond)
+	// A full buffer flushes at once. Rows after that wait for the 2 s ticker.
+	require.Eventually(t, func() bool { return s.AuditDepth() == 0 }, 3*auditFlushInterval, 5*time.Millisecond)
 	s.Close()
 	assert.Len(t, st.Store.(*memory.Store).Audit(), 103)
 }

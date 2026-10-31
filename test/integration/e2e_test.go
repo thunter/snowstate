@@ -58,6 +58,7 @@ func snowEnv() []string {
 		"SNOWSTATE_SNOWFLAKE__SCHEMA="+schema,
 		"SNOWSTATE_SNOWFLAKE__AUTH="+os.Getenv("SNOWSTATE_IT_AUTH"),
 		"SNOWSTATE_SNOWFLAKE__PRIVATE_KEY_PATH="+os.Getenv("SNOWSTATE_IT_PRIVATE_KEY_PATH"),
+		"SNOWSTATE_SNOWFLAKE__WIF__TOKEN_SOURCE=github",
 	)
 }
 
@@ -249,6 +250,68 @@ resource "terraform_data" "d" {
 					os.Getenv("SNOWSTATE_IT_DATABASE"), schema), k).Scan(&n))
 				assert.Equal(t, 1, n)
 			})
+		})
+	}
+}
+
+// E2E scenario 9 through the sidecar on real Snowflake: plan and apply in
+// separate processes, as two CI jobs would.
+func TestSplitPlanApplyOverSnowflake(t *testing.T) {
+	st := newStore(t)
+	bin := buildBinary(t)
+	k := "it/split/" + ids.V4()[:8]
+	dir := t.TempDir()
+	src := `terraform {
+  backend "http" {}
+}
+variable "v" {
+  default = "a"
+}
+resource "terraform_data" "d" {
+  input = var.v
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(src), 0o600))
+
+	for name, client := range clientBinaries(t) {
+		t.Run(name, func(t *testing.T) {
+			run := func(args ...string) (string, error) {
+				c := exec.Command(bin, append([]string{"exec", "--key", k, "--", client}, args...)...)
+				c.Dir = dir
+				c.Env = append(snowEnv(), "TF_IN_AUTOMATION=1", "TF_INPUT=0", "CHECKPOINT_DISABLE=1")
+				out, err := c.CombinedOutput()
+				return string(out), err
+			}
+			ok := func(args ...string) string {
+				t.Helper()
+				out, err := run(args...)
+				require.NoError(t, err, "%s\n%s", strings.Join(args, " "), out)
+				return out
+			}
+			require.NoError(t, os.RemoveAll(filepath.Join(dir, ".terraform")))
+			ok("init", "-input=false")
+			ok("apply", "-auto-approve", "-input=false", "-var", "v="+name)
+			before, err := st.ListVersions(context.Background(), k, 0)
+			require.NoError(t, err)
+
+			ok("plan", "-input=false", "-var", "v="+name+"2", "-out=tfplan")
+			after, err := st.ListVersions(context.Background(), k, 0)
+			require.NoError(t, err)
+			assert.Len(t, after, len(before), "plan must not write")
+
+			require.NoError(t, os.RemoveAll(filepath.Join(dir, ".terraform")))
+			ok("init", "-input=false")
+			ok("apply", "-input=false", "tfplan")
+
+			ok("plan", "-input=false", "-var", "v=stale", "-out=tfplan")
+			ok("apply", "-auto-approve", "-input=false", "-var", "v=moved")
+			out, err := run("apply", "-input=false", "-no-color", "tfplan")
+			require.Error(t, err, out)
+			assert.Contains(t, out, "Saved plan is stale")
+
+			cur, err := st.GetLock(context.Background(), k)
+			require.NoError(t, err)
+			assert.Nil(t, cur)
 		})
 	}
 }

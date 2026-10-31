@@ -210,10 +210,3 @@ func loadKey(cfg Config) (*rsa.PrivateKey, error) {
 	}
 	return key, nil
 }
-
-// oidcTokenFetcher is replaced for GitHub Actions in M6.5.
-func oidcTokenFetcher(wif WIF) func(context.Context) (string, error) {
-	return func(context.Context) (string, error) {
-		return "", fmt.Errorf("snowflake: unsupported wif.token_source %q", wif.TokenSource)
-	}
-}

@@ -1,0 +1,55 @@
+# Plan on pull requests, then plan, approve and apply on main. Each job uses its
+# own Snowflake identity through workload identity federation. See
+# docs/github-actions.md.
+name: terraform
+on:
+  pull_request:
+  push: { branches: [main] }
+
+permissions: { contents: read, id-token: write, pull-requests: write }
+
+env:
+  SNOWSTATE_KEY: platform/network/prod
+  SNOWSTATE_SNOWFLAKE__ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+  SNOWSTATE_SNOWFLAKE__AUTH: workload_identity
+  SNOWSTATE_SNOWFLAKE__WIF__TOKEN_SOURCE: github
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    environment: prod-plan            # bound to the read,lock Snowflake user
+    concurrency:
+      group: tf-${{ github.workflow }}-prod
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_wrapper: false }
+      - uses: thunter/snowstate/action/setup@v1
+      - run: snowstate exec -- terraform init -input=false
+      - run: snowstate exec -- terraform plan -input=false -out=tfplan
+      - if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with: { name: tfplan, path: tfplan, retention-days: 1 }   # contains sensitive values
+
+  apply:
+    if: github.event_name == 'push'
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: prod                 # required reviewers; bound to the read,write,lock user
+    concurrency:
+      group: tf-${{ github.workflow }}-prod
+      cancel-in-progress: false
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_wrapper: false }
+      - uses: thunter/snowstate/action/setup@v1
+      - uses: actions/download-artifact@v4
+        with: { name: tfplan }
+      - run: snowstate exec -- terraform init -input=false
+      - run: snowstate exec -- terraform apply -input=false tfplan
+      - if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with: { name: errored-state, path: errored.tfstate, if-no-files-found: ignore, retention-days: 7 }

@@ -105,6 +105,8 @@ type Hooks struct {
 	// Locked and Unlocked report locks taken and released through this service.
 	Locked   func(l *Lock)
 	Unlocked func(l *Lock)
+	// Blocked reports the holder of a lock that stopped a request.
+	Blocked func(current *Lock)
 }
 
 // Options configures a Service.
@@ -385,6 +387,9 @@ func (s *Service) recordWriteFailure(ctx context.Context, p Principal, action, k
 	var locked *store.ErrLocked
 	if errors.As(err, &locked) {
 		s.conflict()
+		if s.opts.Hooks.Blocked != nil {
+			s.opts.Hooks.Blocked(locked.Current)
+		}
 	}
 	s.record(ctx, p, action, key, "", lockID, err)
 }

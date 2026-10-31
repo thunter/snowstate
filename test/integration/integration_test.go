@@ -49,6 +49,7 @@ func connConfig(schemaName string) sfconn.Config {
 		Auth:                 os.Getenv("SNOWSTATE_IT_AUTH"),
 		PrivateKeyPath:       os.Getenv("SNOWSTATE_IT_PRIVATE_KEY_PATH"),
 		PrivateKeyPassphrase: os.Getenv("SNOWSTATE_IT_PRIVATE_KEY_PASSPHRASE"),
+		WIF:                  sfconn.WIF{Provider: "oidc", TokenSource: "github"},
 		QueryTag:             "snowstate_it",
 		LockTimeout:          30 * time.Second,
 		Pool:                 sfconn.Pool{MaxOpen: 30, MaxIdle: 30, ConnMaxLifetime: time.Hour},

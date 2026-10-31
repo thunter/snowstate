@@ -3,6 +3,7 @@ package e2e
 import (
 	"crypto/md5"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -559,4 +561,269 @@ func TestStandardModeIsGated(t *testing.T) {
 	cmd.Env = append(base, "SNOWSTATE_LOCKING__STANDARD_MODE_ACKNOWLEDGED=true")
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
+}
+
+func auditCount(t *testing.T, snapshot, action string) int {
+	t.Helper()
+	events, err := memory.ReadSnapshotAudit(snapshot)
+	require.NoError(t, err)
+	n := 0
+	for _, e := range events {
+		if e.Action == action {
+			n++
+		}
+	}
+	return n
+}
+
+// 9. Plan and apply in separate processes, with different ports and passwords
+// and a fresh .terraform. Also verifies §8.4.1: plan never writes state.
+func TestScenario9SplitPlanApply(t *testing.T) {
+	forEachClient(t, func(t *testing.T, c client) {
+		w := newSidecarWorkdir(t, c, "platform/split/prod", `variable "v" {
+  default = "a"
+}
+resource "terraform_data" "d" {
+  input = var.v
+}
+`)
+		w.okSidecar("init", "-input=false")
+		w.okSidecar("apply", "-auto-approve", "-input=false")
+		writes := auditCount(t, w.snapshot, store.ActionPut)
+
+		for _, extra := range [][]string{{}, {"-refresh-only"}} {
+			w.okSidecar(append([]string{"plan", "-input=false"}, extra...)...)
+		}
+		assert.Equal(t, writes, auditCount(t, w.snapshot, store.ActionPut), "plan must not write state")
+
+		w.okSidecar("plan", "-input=false", "-var", "v=b", "-out=tfplan")
+		assert.Equal(t, writes, auditCount(t, w.snapshot, store.ActionPut), "plan -out must not write state")
+
+		raw, err := os.ReadFile(filepath.Join(w.dir, "tfplan"))
+		require.NoError(t, err)
+		assert.NotContains(t, string(raw), "127.0.0.1", "the plan carries no sidecar address")
+
+		require.NoError(t, os.RemoveAll(filepath.Join(w.dir, ".terraform")))
+		w.okSidecar("init", "-input=false")
+		w.okSidecar("apply", "-input=false", "tfplan")
+		assert.Greater(t, auditCount(t, w.snapshot, store.ActionPut), writes)
+
+		// Variant: state moves on between plan and apply.
+		w.okSidecar("plan", "-input=false", "-var", "v=c", "-out=tfplan")
+		w.okSidecar("apply", "-auto-approve", "-input=false", "-var", "v=d")
+		out, err := w.sidecar(nil, "apply", "-input=false", "-no-color", "tfplan").CombinedOutput()
+		require.Error(t, err, "a stale plan must be refused\n%s", out)
+		assert.Contains(t, string(out), "Saved plan is stale")
+	})
+}
+
+func githubEnv(summary string) []string {
+	return []string{
+		"GITHUB_ACTIONS=true", "GITHUB_REPOSITORY=o/r", "GITHUB_WORKFLOW=terraform", "GITHUB_JOB=apply",
+		"GITHUB_RUN_ID=4242", "GITHUB_RUN_ATTEMPT=1", "GITHUB_ACTOR=me", "GITHUB_SHA=abc", "GITHUB_REF=refs/heads/main",
+		"GITHUB_STEP_SUMMARY=" + summary,
+	}
+}
+
+// 10. The Actions context, run locally with the runner's variables. The real
+// workflow runs in .github/workflows/action.yml.
+func TestScenario10GitHubContext(t *testing.T) {
+	forEachClient(t, func(t *testing.T, c client) {
+		key := "platform/gha/prod"
+		summary := filepath.Join(t.TempDir(), "summary.md")
+		w := newSidecarWorkdir(t, c, key, `resource "terraform_data" "d" { input = "x" }`)
+		w.env = append(w.env, githubEnv(summary)...)
+		w.okSidecar("init", "-input=false")
+		w.okSidecar("apply", "-auto-approve", "-input=false")
+
+		events, err := memory.ReadSnapshotAudit(w.snapshot)
+		require.NoError(t, err)
+		seen := false
+		for _, e := range events {
+			if e.Action == store.ActionPut {
+				seen = true
+				assert.Equal(t, "4242", e.Detail["run_id"])
+				assert.Equal(t, "https://github.com/o/r/actions/runs/4242", e.Detail["run_url"])
+			}
+		}
+		assert.True(t, seen)
+
+		raw, err := os.ReadFile(summary)
+		require.NoError(t, err)
+		text := string(raw)
+		assert.Contains(t, text, key)
+		assert.Contains(t, text, "Before: none")
+		assert.Contains(t, text, "After: serial")
+		assert.Contains(t, text, "Lock acquired")
+		assert.Contains(t, text, "Lock released")
+		assert.NotContains(t, text, "terraform_data", "no state content in the summary")
+	})
+}
+
+func TestGitHubLockNamesTheRunAndConflictsLinkIt(t *testing.T) {
+	c := clients[0]
+	key := "platform/gha/conflict"
+	summaryA := filepath.Join(t.TempDir(), "a.md")
+	w := newSidecarWorkdir(t, c, key, slowFixture(30))
+	w.env = append(w.env, githubEnv(summaryA)...)
+	w.okSidecar("init", "-input=false")
+
+	cmd := w.sidecar(nil, "apply", "-auto-approve", "-input=false")
+	require.NoError(t, cmd.Start())
+	var held store.Lock
+	require.Eventually(t, func() bool {
+		locks, err := memory.ReadSnapshotLocks(w.snapshot)
+		if err != nil {
+			return false
+		}
+		l, ok := locks[key]
+		held = l
+		return ok
+	}, time.Minute, 50*time.Millisecond)
+	assert.Equal(t, "github:o/r#4242/1", held.AcquiredBy)
+	require.NoError(t, syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL))
+	killDescendants(cmd.Process.Pid)
+	_ = cmd.Wait()
+
+	summaryB := filepath.Join(t.TempDir(), "b.md")
+	w.env = append(w.env, "GITHUB_RUN_ID=5555", "GITHUB_STEP_SUMMARY="+summaryB)
+	_, err := w.sidecar(nil, "apply", "-auto-approve", "-input=false").CombinedOutput()
+	require.Error(t, err)
+	raw, err := os.ReadFile(summaryB)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "Lock conflict")
+	assert.Contains(t, string(raw), "https://github.com/o/r/actions/runs/4242")
+}
+
+// killDescendants is for a test that kills the sidecar: the child is in its
+// own process group, so it needs finding separately.
+func killDescendants(pid int) {
+	_ = exec.Command("pkill", "-KILL", "-P", fmt.Sprint(pid)).Run()
+}
+
+func childOf(t *testing.T, pid int) int {
+	t.Helper()
+	var child int
+	require.Eventually(t, func() bool {
+		out, err := exec.Command("pgrep", "-P", fmt.Sprint(pid)).Output()
+		if err != nil {
+			return false
+		}
+		_, err = fmt.Sscan(string(out), &child)
+		return err == nil
+	}, 30*time.Second, 50*time.Millisecond)
+	return child
+}
+
+func waitSnapshotLock(t *testing.T, snapshot, key string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		locks, err := memory.ReadSnapshotLocks(snapshot)
+		if err != nil {
+			return false
+		}
+		_, ok := locks[key]
+		return ok
+	}, time.Minute, 50*time.Millisecond, "lock never appeared")
+}
+
+// 11. SIGINT stops Terraform gracefully through the sidecar. SIGKILL to the
+// child leaves the lock held, and stderr names the release command.
+func TestScenario11Signals(t *testing.T) {
+	forEachClient(t, func(t *testing.T, c client) {
+		key := "platform/signals/prod"
+		w := newSidecarWorkdir(t, c, key, `resource "terraform_data" "fast" { input = "x" }
+`+slowFixture(30))
+		w.okSidecar("init", "-input=false")
+
+		// Wait for the provisioner, so the fast resource is already in state.
+		var out strings.Builder
+		cmd := w.sidecar(nil, "apply", "-auto-approve", "-input=false", "-no-color")
+		cmd.Stdout, cmd.Stderr = &out, &out
+		require.NoError(t, cmd.Start())
+		waitSnapshotLock(t, w.snapshot, key)
+		time.Sleep(2 * time.Second)
+		require.NoError(t, syscall.Kill(cmd.Process.Pid, syscall.SIGINT))
+		_ = cmd.Wait()
+
+		text := out.String()
+		assert.Contains(t, text, "Interrupt received", "Terraform stopped gracefully")
+		assert.NotContains(t, text, "Two interrupts received")
+		locks, err := memory.ReadSnapshotLocks(w.snapshot)
+		require.NoError(t, err)
+		assert.Empty(t, locks, "the lock was released during the graceful stop")
+		assert.Positive(t, auditCount(t, w.snapshot, store.ActionPut), "state was written")
+
+		// Now kill the child outright.
+		var killed strings.Builder
+		cmd = w.sidecar(nil, "apply", "-auto-approve", "-input=false")
+		cmd.Stdout, cmd.Stderr = &killed, &killed
+		require.NoError(t, cmd.Start())
+		waitSnapshotLock(t, w.snapshot, key)
+		child := childOf(t, cmd.Process.Pid)
+		require.NoError(t, syscall.Kill(child, syscall.SIGKILL))
+		err = cmd.Wait()
+		var exit *exec.ExitError
+		require.ErrorAs(t, err, &exit)
+		assert.Equal(t, 137, exit.ExitCode())
+
+		locks, err = memory.ReadSnapshotLocks(w.snapshot)
+		require.NoError(t, err)
+		lock, held := locks[key]
+		require.True(t, held, "the lock stays held")
+		assert.Contains(t, killed.String(), lock.LockID)
+		assert.Contains(t, killed.String(), "snowstate lock release "+key)
+	})
+}
+
+func TestReleaseStaleLockOptIn(t *testing.T) {
+	c := clients[0]
+	key := "platform/stale/prod"
+	w := newSidecarWorkdir(t, c, key, slowFixture(30))
+	w.okSidecar("init", "-input=false")
+	var out strings.Builder
+	cmd := w.sidecar([]string{"--release-stale-lock"}, "apply", "-auto-approve", "-input=false")
+	cmd.Stdout, cmd.Stderr = &out, &out
+	require.NoError(t, cmd.Start())
+	waitSnapshotLock(t, w.snapshot, key)
+	require.NoError(t, syscall.Kill(childOf(t, cmd.Process.Pid), syscall.SIGKILL))
+	_ = cmd.Wait()
+	locks, err := memory.ReadSnapshotLocks(w.snapshot)
+	require.NoError(t, err)
+	assert.Empty(t, locks)
+	assert.Contains(t, out.String(), "released stale lock")
+	assert.Equal(t, 1, auditCount(t, w.snapshot, store.ActionForceUnlock))
+}
+
+// The setup action's installer, against a local release directory.
+func TestSetupActionInstaller(t *testing.T) {
+	release := t.TempDir()
+	asset := "snowstate_linux_amd64"
+	body := []byte("#!/bin/sh\necho installed\n")
+	require.NoError(t, os.WriteFile(filepath.Join(release, asset), body, 0o755))
+	sum := sha256.Sum256(body)
+	require.NoError(t, os.WriteFile(filepath.Join(release, "checksums.txt"),
+		[]byte(hex.EncodeToString(sum[:])+"  "+asset+"\n"), 0o600))
+
+	install := func(verify string) (string, string, error) {
+		dir := filepath.Join(t.TempDir(), "bin")
+		cmd := exec.Command(filepath.Join(repoRoot, "action/setup/install.sh"))
+		cmd.Env = append(baseEnv(), "BASE_URL=file://"+release, "ASSET="+asset, "BINARY=snowstate",
+			"DIR="+dir, "VERIFY="+verify, "REPOSITORY=x/y", "VERSION=v1")
+		out, err := cmd.CombinedOutput()
+		return dir, string(out), err
+	}
+	dir, out, err := install("true")
+	require.NoError(t, err, out)
+	got, err := exec.Command(filepath.Join(dir, "snowstate")).Output()
+	require.NoError(t, err)
+	assert.Equal(t, "installed\n", string(got))
+
+	require.NoError(t, os.WriteFile(filepath.Join(release, asset), []byte("tampered"), 0o755))
+	_, out, err = install("true")
+	require.Error(t, err, "a tampered binary must be refused")
+	assert.Contains(t, out, "checksum mismatch")
+
+	_, _, err = install("false")
+	require.NoError(t, err, "verify-checksum=false skips the check")
 }

@@ -32,8 +32,9 @@ func Doctor(ctx context.Context, cfg *config.Config, out io.Writer) bool {
 	}
 	defer func() { _ = st.Close() }()
 
-	if !check("snowflake auth", st.Ping(ctx), "connected") {
-		printConnectivityHint(st.Ping(ctx), out)
+	pingErr := st.Ping(ctx)
+	if !check("snowflake auth", pingErr, "connected") {
+		printConnectivityHint(pingErr, out)
 		return false
 	}
 
@@ -84,4 +85,16 @@ func roundTrip(ctx context.Context, st *snowflake.Store) error {
 	})
 }
 
-func printConnectivityHint(error, io.Writer) {}
+// printConnectivityHint explains the network-policy options (SPEC §8.4.2).
+func printConnectivityHint(err error, out io.Writer) {
+	if !snowflake.IsNetworkPolicyRejection(err) {
+		return
+	}
+	fmt.Fprint(out, `
+A Snowflake network policy rejected this IP. GitHub-hosted runners have no fixed
+IPs, so choose one of these (docs/github-actions.md has the details):
+  1. Allow GitHub's published Actions IP ranges (large, and they change).
+  2. Use larger runners with static IPs (GitHub Enterprise Cloud).
+  3. Use self-hosted runners inside the corporate network.
+`)
+}

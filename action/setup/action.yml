@@ -1,0 +1,74 @@
+name: Set up snowstate
+description: Downloads a snowstate release binary, verifies it and adds it to PATH.
+inputs:
+  version:
+    description: Release to install, such as v1.2.3. Defaults to the ref this action was used at.
+    required: false
+    default: ""
+  verify-checksum:
+    description: Verify the binary against checksums.txt.
+    required: false
+    default: "true"
+  repository:
+    description: Repository to download from.
+    required: false
+    default: thunter/snowstate
+outputs:
+  path:
+    description: Path of the installed binary.
+    value: ${{ steps.locate.outputs.path }}
+  version:
+    description: Version installed.
+    value: ${{ steps.resolve.outputs.version }}
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        version="${INPUT_VERSION:-$ACTION_REF}"
+        if [ -z "$version" ]; then
+          echo "::error::no version: set the version input or pin the action to a tag"
+          exit 1
+        fi
+        case "$RUNNER_OS" in
+          Linux) os=linux; ext= ;;
+          macOS) os=darwin; ext= ;;
+          Windows) os=windows; ext=.exe ;;
+          *) echo "::error::unsupported runner OS $RUNNER_OS"; exit 1 ;;
+        esac
+        case "$RUNNER_ARCH" in
+          X64) arch=amd64 ;;
+          ARM64) arch=arm64 ;;
+          *) echo "::error::unsupported runner architecture $RUNNER_ARCH"; exit 1 ;;
+        esac
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "asset=snowstate_${os}_${arch}${ext}" >> "$GITHUB_OUTPUT"
+        echo "binary=snowstate${ext}" >> "$GITHUB_OUTPUT"
+        echo "dir=$RUNNER_TOOL_CACHE/snowstate/$version/$arch" >> "$GITHUB_OUTPUT"
+    - id: cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.resolve.outputs.dir }}
+        key: snowstate-${{ steps.resolve.outputs.version }}-${{ steps.resolve.outputs.asset }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        VERSION: ${{ steps.resolve.outputs.version }}
+        ASSET: ${{ steps.resolve.outputs.asset }}
+        BINARY: ${{ steps.resolve.outputs.binary }}
+        DIR: ${{ steps.resolve.outputs.dir }}
+        VERIFY: ${{ inputs.verify-checksum }}
+      run: "$GITHUB_ACTION_PATH/install.sh"
+    - id: locate
+      shell: bash
+      env:
+        DIR: ${{ steps.resolve.outputs.dir }}
+        BINARY: ${{ steps.resolve.outputs.binary }}
+      run: |
+        echo "$DIR" >> "$GITHUB_PATH"
+        echo "path=$DIR/$BINARY" >> "$GITHUB_OUTPUT"

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"sync"
 	"time"
 )
 
@@ -32,14 +33,44 @@ func V4() string {
 	return format(b)
 }
 
-// V7 returns a time-ordered UUID.
+// v7 state makes IDs strictly increasing within a process, using the 12-bit
+// rand_a field as a sequence (RFC 9562 §6.2, method 1). Version listings and GC
+// order by ID, so two writes in one millisecond must not sort randomly.
+var (
+	v7Mu   sync.Mutex
+	v7Last int64
+	v7Seq  uint16
+)
+
+const v7MaxSeq = 0xfff
+
+func nextV7() (int64, uint16) {
+	v7Mu.Lock()
+	defer v7Mu.Unlock()
+	now := time.Now().UnixMilli()
+	if now > v7Last {
+		v7Last, v7Seq = now, 0
+		return v7Last, v7Seq
+	}
+	// Same millisecond, or the clock stepped back: stay ahead of the last ID.
+	if v7Seq == v7MaxSeq {
+		v7Last, v7Seq = v7Last+1, 0
+		return v7Last, v7Seq
+	}
+	v7Seq++
+	return v7Last, v7Seq
+}
+
+// V7 returns a time-ordered UUID, strictly increasing within a process.
 func V7() string {
+	ms, seq := nextV7()
 	var b [16]byte
 	_, _ = rand.Read(b[:])
-	var ms [8]byte
-	binary.BigEndian.PutUint64(ms[:], uint64(time.Now().UnixMilli()))
-	copy(b[0:6], ms[2:8])
-	b[6] = b[6]&0x0f | 0x70
+	var be [8]byte
+	binary.BigEndian.PutUint64(be[:], uint64(ms))
+	copy(b[0:6], be[2:8])
+	b[6] = 0x70 | byte(seq>>8)
+	b[7] = byte(seq)
 	b[8] = b[8]&0x3f | 0x80
 	return format(b)
 }

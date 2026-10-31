@@ -1,0 +1,77 @@
+# E2E scenario 10: the reference workflow's logic, using action/setup built from
+# this commit, with the plan handed between jobs as an artifact. No Snowflake is
+# needed: the sidecar uses the test store, carried between jobs in a file.
+name: action
+on:
+  push: { branches: [main] }
+  pull_request:
+
+permissions: { contents: read }
+
+env:
+  SNOWSTATE_KEY: platform/network/ci
+  SNOWSTATE_ALLOW_TEST_STORE: "1"
+  SNOWSTATE_TEST_STORE_FILE: ${{ github.workspace }}/store.json
+  FIXTURE: test/e2e/fixtures/action
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - run: make release VERSION=ci
+      - uses: actions/upload-artifact@v4
+        with: { name: dist, path: dist/, retention-days: 1 }
+
+  plan:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: dist, path: dist }
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_wrapper: false }
+      - uses: ./action/setup
+        with: { version: ci }
+        env: { BASE_URL: "file://${{ github.workspace }}/dist" }
+      - run: snowstate exec --store=memory -- terraform -chdir="$FIXTURE" init -input=false
+      - run: snowstate exec --store=memory -- terraform -chdir="$FIXTURE" plan -input=false -out=tfplan
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: ${{ env.FIXTURE }}/tfplan
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: store
+          path: store.json
+          retention-days: 1
+          if-no-files-found: ignore
+
+  apply:
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: dist, path: dist }
+      - uses: actions/download-artifact@v4
+        with: { name: tfplan, path: "${{ env.FIXTURE }}" }
+      - uses: actions/download-artifact@v4
+        continue-on-error: true # the plan job writes no state, so there may be none
+        with: { name: store }
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_wrapper: false }
+      - uses: ./action/setup
+        with: { version: ci }
+        env: { BASE_URL: "file://${{ github.workspace }}/dist" }
+      - run: snowstate exec --store=memory -- terraform -chdir="$FIXTURE" init -input=false
+      - run: snowstate exec --store=memory -- terraform -chdir="$FIXTURE" apply -input=false tfplan
+      - name: Check the audit detail and the step summary
+        run: |
+          jq -e --arg run "$GITHUB_RUN_ID" '[.Audit[] | select(.Action == "PUT" and .Detail.run_id == $run)] | length > 0' store.json
+          grep -q 'snowstate: `platform/network/ci`' "$GITHUB_STEP_SUMMARY"
+          grep -q 'Lock released' "$GITHUB_STEP_SUMMARY"

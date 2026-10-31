@@ -8,4 +8,5 @@ dist/
 bin/
 .tools/
 cover.out
+.it-key.p8
 snowstate.yaml

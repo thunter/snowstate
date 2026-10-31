@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strings"
 
 	sf "github.com/snowflakedb/gosnowflake/v2"
 
@@ -32,6 +33,7 @@ const (
 	codeTooManyLockWaiters = 200012
 	// codeFileNotFound: DownloadStream found nothing at the stage location.
 	codeFileNotFound = 264006
+	codeIPNotAllowed = 390432
 )
 
 func errorNumber(err error) int {
@@ -43,6 +45,14 @@ func errorNumber(err error) int {
 }
 
 func isPrimaryKeyViolation(err error) bool { return errorNumber(err) == codePrimaryKeyViolation }
+
+// IsNetworkPolicyRejection reports a login refused because of the client IP.
+// The number is from Snowflake's documented behaviour and was not reproduced
+// here, as the test account has no network policy, so the message is a fallback.
+func IsNetworkPolicyRejection(err error) bool {
+	return errorNumber(err) == codeIPNotAllowed ||
+		(err != nil && strings.Contains(err.Error(), "is not allowed to access Snowflake"))
+}
 
 func isLockContention(err error) bool {
 	n := errorNumber(err)

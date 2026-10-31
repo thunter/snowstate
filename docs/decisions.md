@@ -272,3 +272,49 @@ work: `state push` must take the lock, and the crashed run still holds it. The r
 **D40. `migrate` and `project` connect without a session schema.** Following the README literally found that Snowflake
 rejects a login naming a schema that does not exist (390201), so a first `migrate` could never run. The store qualifies
 every name, so provisioning commands simply leave the session schema unset. `TestCLIMigrateCreatesTheSchema` covers it.
+
+## M6.5: GitHub Actions
+
+| VERIFY | Outcome |
+|---|---|
+| WIF fields (§5.2) | `Authenticator = AuthTypeWorkloadIdentityFederation`, `WorkloadIdentityProvider = "OIDC"`, and the JWT in `Token` (`auth_wif.go:86`, read through `sfconfig.GetToken`). **Not exercised against Snowflake**: see below. |
+| OIDC token response (§5.2) | JSON field `value`, from `@actions/core` `oidc-utils.ts`. |
+| `sub` claim formats (§8.4.1) | Recorded in `docs/github-actions.md`, from GitHub's OIDC reference. An environment takes precedence, and a colon becomes `%3A`. |
+| Plan writes state? (§8.4.1) | **No**, for `plan`, `plan -refresh-only` and `plan -out`, on all three clients. Scenario 9 asserts no `PUT`. |
+| Cancellation timings (§8.4.4) | SIGINT, then SIGTERM after 7.5 s, then process-tree kill after 2.5 s (`Runner.Sdk/ProcessInvoker.cs:32-33`, `:448-455`). The server force-terminates after 5 minutes. |
+| Static IP runners (§8.4.2) | Need GitHub Enterprise Cloud, though larger runners also exist on Team. Not on macOS or with Azure private networking. Ranges are dropped after 90 days unused. |
+
+**D41. The setup action uses one bash installer.** §8.4.3 says bash and PowerShell steps. Git Bash is on every hosted
+runner, including Windows, so one `shell: bash` script covers all of them, with less to test.
+
+**D42. The binary installs through `install.sh`, with a `BASE_URL` override** so CI can install a build of the current
+commit from a local directory.
+
+**D43. `cosign` signs `checksums.txt` in the release workflow, but the action does not verify it.** §8.4.3 makes this
+conditional, and verifying would mean installing cosign on the runner. The checksum check is on by default.
+
+**D44. The summary never shows arguments.** It names the program and subcommand only, because `-var` can carry secrets.
+
+**D45. Network-policy detection is unverified.** The test account has no network policy, so 390432 could not be
+reproduced. `doctor` also matches the documented message text as a fallback. This is the one place matching uses text.
+
+**D46. A short cancellation window.** Terraform has 10 s from SIGINT to the process-tree kill, which is often not enough
+to finish a graceful stop. This is why the lock is left held in that case and the docs cover recovery.
+
+**D47. The reference workflow in §8.4.4 is not valid YAML as written.** `concurrency: { group: tf-${{ github.workflow }}-prod, ... }`
+puts `${{ }}` braces inside a flow mapping, which a YAML parser rejects. `examples/github-actions/terraform.yml` uses block
+style. Everything else matches the spec.
+
+**D48. UUIDv7 is strictly increasing within a process.** Version listings and GC order by `VERSION_ID`, but plain UUIDv7
+sorts randomly within a millisecond, and repeated test runs caught a listing with the wrong newest version. `ids.V7` now
+uses `rand_a` as a sequence (RFC 9562 §6.2). Across replicas, order follows the clock, which is safe in practice because
+writes to one state are serialised by its lock and are seconds apart.
+
+### Open: not verified in this build
+
+- **`github-wif`, the real Actions workflows and CI itself have not run.** They need a push to GitHub, an OIDC service
+  user and the `integration` environment. The workflow files were only parsed as YAML, not run. Everything they exercise was tested
+  locally with the runner's variables set (scenario 10), and the OIDC fetch against a local HTTP server, but a real
+  Snowflake WIF login has not happened.
+- **The container image** has not been built (D38).
+- **Role isolation** has not run (see M4).

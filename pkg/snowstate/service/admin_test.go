@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -193,7 +192,6 @@ func TestGCKeepsNewestVersionsAndCurrent(t *testing.T) {
 		var err error
 		last, err = s.Put(ctx, alice, testKey, "", stateBody(i), nil)
 		require.NoError(t, err)
-		time.Sleep(2 * time.Millisecond)
 	}
 
 	dry, err := s.GC(ctx, alice, true)

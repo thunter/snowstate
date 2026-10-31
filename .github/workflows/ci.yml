@@ -85,3 +85,22 @@ jobs:
         env: { KEY: "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" }
       - if: env.HAS_KEY == 'true'
         run: make tools integration
+  github-wif:
+    # Dogfoods the recommended setup: real Snowflake through GitHub OIDC. It needs
+    # the OIDC user from dev_setup.md and the `integration` environment.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: integration
+    permissions: { contents: read, id-token: write }
+    env:
+      SNOWSTATE_IT_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+      SNOWSTATE_IT_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
+      SNOWSTATE_IT_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+      SNOWSTATE_IT_DATABASE: ${{ vars.SNOWFLAKE_DATABASE }}
+      SNOWSTATE_IT_AUTH: workload_identity
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - run: make tools
+      - run: go test -count=1 -timeout 30m -tags integration -run 'TestE2EOverSnowflake|TestSplitPlanApplyOverSnowflake' ./test/integration/...
