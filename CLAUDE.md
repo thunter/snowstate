@@ -1,0 +1,12 @@
+# snowstate
+
+A Terraform/OpenTofu `http` state backend that stores state in Snowflake.
+
+- **`SPEC.md` is the source of truth.** Read it fully before starting, then build milestone by milestone (§14). Don't skip acceptance criteria.
+- Background and the options considered are in `docs/initial-review.md`. Terraform's experimental `state_store` is covered in `docs/pluggable-state-storage.md`.
+- Keep the core in `pkg/` frontend-neutral (SPEC §3, G7) so the M7 provider can reuse it. M7 is optional and comes after v1.0.
+- Local tooling and the Snowflake dev environment are described in `dev_setup.md`. Real-Snowflake integration tests read **`SNOWSTATE_IT_ACCOUNT`, `SNOWSTATE_IT_USER`, `SNOWSTATE_IT_ROLE`, `SNOWSTATE_IT_WAREHOUSE`, `SNOWSTATE_IT_DATABASE`, `SNOWSTATE_IT_AUTH`, `SNOWSTATE_IT_PRIVATE_KEY_PATH`** (and optionally `SNOWSTATE_IT_PRIVATE_KEY_PASSPHRASE`). Skip those tests when the variables are unset. Never read or print the private key file contents.
+- Record every VERIFY outcome and every deviation from the spec in `docs/decisions.md`.
+- Don't stop to ask questions. Choose the safest reasonable behaviour, document it, and continue.
+- Never log state bodies, tokens, passwords or `Authorization` headers.
+- Before each commit, run `make lint test` (and `make e2e` from M1 onward).
