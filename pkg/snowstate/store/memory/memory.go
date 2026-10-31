@@ -153,6 +153,10 @@ func (t *tx) GetLock(_ context.Context, key string) (*store.Lock, error) {
 	return t.s.lock(key), nil
 }
 
+func (t *tx) PeekLock(_ context.Context, key string) (*store.Lock, error) {
+	return t.s.lock(key), nil
+}
+
 func (s *Store) lock(key string) *store.Lock {
 	l, ok := s.data.Locks[key]
 	if !ok {
@@ -366,7 +370,7 @@ func (s *Store) ListBlobs(_ context.Context) ([]store.Blob, error) {
 	defer s.mu.Unlock()
 	out := make([]store.Blob, 0, len(s.data.Blobs))
 	for p := range s.data.Blobs {
-		out = append(out, store.Blob{Path: p})
+		out = append(out, store.Blob{Path: p, Key: p[:strings.LastIndexByte(p, '/')]})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil

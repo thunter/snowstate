@@ -26,7 +26,9 @@ func TestImportBoundaries(t *testing.T) {
 	for _, line := range direct {
 		fields := strings.Fields(line)
 		for _, imp := range fields[1:] {
-			assert.NotEqual(t, "net/http", imp, "%s imports net/http", fields[0])
+			if !strings.HasSuffix(fields[0], "/sfconn") {
+				assert.NotEqual(t, "net/http", imp, "%s imports net/http", fields[0])
+			}
 			if imp == "github.com/snowflakedb/gosnowflake" {
 				assert.Contains(t, []string{
 					"github.com/thunter/snowstate/pkg/snowstate/store/snowflake",

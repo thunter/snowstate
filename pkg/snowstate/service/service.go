@@ -6,6 +6,7 @@ package service
 import (
 	"bytes"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
@@ -243,14 +244,17 @@ func (s *Service) recordRead(ctx context.Context, p Principal, key, versionID st
 
 // load decompresses a version and verifies it against its recorded MD5.
 func (s *Service) load(ctx context.Context, v *store.Version) (*StateBlob, error) {
-	gz := v.Content
+	var body []byte
+	var err error
 	if v.Storage == store.StorageStage {
-		var err error
-		if gz, err = s.st.GetBlob(ctx, v.Key, v.StagePath); err != nil {
-			return nil, fmt.Errorf("blob for version %s: %w", v.ID, err)
+		gz, gerr := s.st.GetBlob(ctx, v.Key, v.StagePath)
+		if gerr != nil {
+			return nil, fmt.Errorf("blob for version %s: %w", v.ID, gerr)
 		}
+		body, err = gunzip(gz)
+	} else {
+		body, err = inflate(v.Content)
 	}
-	body, err := gunzip(gz)
 	if err != nil {
 		return nil, fmt.Errorf("version %s: %w", v.ID, err)
 	}
@@ -311,10 +315,6 @@ func (s *Service) Put(ctx context.Context, p Principal, key, lockID string, body
 	if err != nil {
 		return nil, err
 	}
-	gz, err := gzipBytes(body)
-	if err != nil {
-		return nil, err
-	}
 
 	v := &store.Version{
 		ID:        ids.V7(),
@@ -327,7 +327,7 @@ func (s *Service) Put(ctx context.Context, p Principal, key, lockID string, body
 		LockID:    lockID,
 		CreatedBy: p.Name,
 	}
-	if err := s.placeBlob(ctx, v, gz); err != nil {
+	if err := s.placeBlob(ctx, v, body); err != nil {
 		return nil, err
 	}
 
@@ -348,10 +348,20 @@ func (s *Service) Put(ctx context.Context, p Principal, key, lockID string, body
 }
 
 // placeBlob decides INLINE or STAGE, uploading before the transaction (§6.3).
-func (s *Service) placeBlob(ctx context.Context, v *store.Version, gz []byte) error {
-	if int64(len(gz)) <= s.opts.InlineMaxBytes {
-		v.Storage, v.Content = store.StorageInline, gz
+// Inline content is zlib because that is what DECOMPRESS_STRING reads, which
+// the inventory view needs. Stage content is gzip.
+func (s *Service) placeBlob(ctx context.Context, v *store.Version, body []byte) error {
+	inline, err := zlibBytes(body)
+	if err != nil {
+		return err
+	}
+	if int64(len(inline)) <= s.opts.InlineMaxBytes {
+		v.Storage, v.Content = store.StorageInline, inline
 		return nil
+	}
+	gz, err := gzipBytes(body)
+	if err != nil {
+		return err
 	}
 	path, err := s.st.PutBlob(ctx, v.Key, v.ID, gz)
 	if err != nil {
@@ -521,31 +531,43 @@ func (s *Service) Lock(ctx context.Context, p Principal, req LockRequest) (*Lock
 
 	var held *Lock
 	err = s.st.InTx(ctx, l.Key, func(tx store.Tx) error {
-		ok, err := tx.InsertLock(ctx, l)
+		held = nil
+		// Reading first keeps losers, and retries, off the contended row.
+		// The primary key still decides any real race.
+		cur, err := tx.PeekLock(ctx, l.Key)
 		if err != nil {
 			return err
 		}
-		if !ok {
-			cur, err := tx.GetLock(ctx, l.Key)
-			if err != nil {
-				return err
-			}
-			if cur == nil { // released between the two statements
-				return fmt.Errorf("%w: lock vanished during acquire", store.ErrUnavailable)
-			}
-			if cur.LockID == l.LockID {
-				held = cur
-				return nil
-			}
-			if !s.lockExpired(cur) {
-				return &store.ErrLocked{Current: cur}
-			}
-			if err := s.stealLock(ctx, tx, p, cur, l); err != nil {
-				return err
-			}
+		retained, err := s.existingLock(cur, l)
+		if retained != nil || err != nil {
+			held = retained
+			return err
 		}
+		// The lock row goes last so the winner holds it only through COMMIT.
+		// Waiters occupy warehouse slots, so any later statement of the
+		// winner's would queue behind them. A loser's rollback drops this row.
 		e := s.event(ctx, p, store.ActionLock, l.Key, "", l.LockID, nil, nil)
-		return tx.InsertAudit(ctx, &e)
+		if err := tx.InsertAudit(ctx, &e); err != nil {
+			return err
+		}
+		if cur != nil {
+			return s.stealLock(ctx, tx, p, cur, l)
+		}
+		ok, err := tx.InsertLock(ctx, l)
+		if ok || err != nil {
+			return err
+		}
+		if cur, err = tx.PeekLock(ctx, l.Key); err != nil {
+			return err
+		}
+		if cur == nil { // released between the two statements
+			return fmt.Errorf("%w: lock vanished during acquire", store.ErrUnavailable)
+		}
+		if retained, err = s.existingLock(cur, l); retained != nil || err != nil {
+			held = retained
+			return err
+		}
+		return s.stealLock(ctx, tx, p, cur, l)
 	})
 	if err != nil {
 		s.recordWriteFailure(ctx, p, store.ActionLock, l.Key, l.LockID, err)
@@ -558,6 +580,19 @@ func (s *Service) Lock(ctx context.Context, p Principal, req LockRequest) (*Lock
 		s.opts.Hooks.Locked(l)
 	}
 	return l, nil
+}
+
+// existingLock decides what a current lock means for an acquire: nothing when
+// there is none or it can be stolen, the lock itself when it has our ID, and
+// ErrLocked otherwise.
+func (s *Service) existingLock(cur, l *Lock) (*Lock, error) {
+	switch {
+	case cur == nil, s.lockExpired(cur) && cur.LockID != l.LockID:
+		return nil, nil
+	case cur.LockID == l.LockID:
+		return cur, nil
+	}
+	return nil, &store.ErrLocked{Current: cur}
 }
 
 func (s *Service) lockExpired(cur *Lock) bool {
@@ -727,6 +762,34 @@ func validKey(key string) error {
 		return fmt.Errorf("%w: %w", store.ErrInvalidKey, err)
 	}
 	return nil
+}
+
+func zlibBytes(body []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	w, err := zlib.NewWriterLevel(&buf, zlib.BestSpeed)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := w.Write(body); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func inflate(z []byte) ([]byte, error) {
+	r, err := zlib.NewReader(bytes.NewReader(z))
+	if err != nil {
+		return nil, fmt.Errorf("inflate: %w", err)
+	}
+	defer func() { _ = r.Close() }()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("inflate: %w", err)
+	}
+	return out, nil
 }
 
 func gzipBytes(body []byte) ([]byte, error) {

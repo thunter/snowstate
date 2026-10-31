@@ -463,18 +463,22 @@ func TestCorruptStoredBytesAreDetected(t *testing.T) {
 	require.NoError(t, err)
 	m, _ := st.GetState(ctx, testKey)
 
-	gz, err := gzipBytes([]byte(`{"tampered":true}`))
+	z, err := zlibBytes([]byte(`{"tampered":true}`))
 	require.NoError(t, err)
 	v, err := st.GetVersion(ctx, testKey, m.CurrentVersionID)
 	require.NoError(t, err)
-	v.Content = gz
+	v.Content = z
 	bad, err := s.load(ctx, v)
 	require.ErrorContains(t, err, "MD5")
 	assert.Nil(t, bad)
 
-	v.Content = []byte("not gzip")
+	v.Content = []byte("not zlib")
 	_, err = s.load(ctx, v)
-	require.ErrorContains(t, err, "gunzip")
+	require.ErrorContains(t, err, "inflate")
+
+	v.Storage, v.StagePath = store.StorageStage, "missing"
+	_, err = s.load(ctx, v)
+	require.ErrorIs(t, err, store.ErrNotFound)
 }
 
 type commitUnknown struct {

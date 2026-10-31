@@ -139,8 +139,8 @@ type StateMeta struct {
 // Deleted reports whether the state has been soft deleted.
 func (m *StateMeta) Deleted() bool { return m != nil && m.DeletedAt != nil }
 
-// Version is a row in STATE_VERSIONS. Content holds gzip bytes for INLINE
-// versions when the store was asked for them.
+// Version is a row in STATE_VERSIONS. Content holds zlib bytes for INLINE
+// versions when the store was asked for them. STAGE blobs are gzip.
 type Version struct {
 	ID           string
 	Key          string
@@ -192,7 +192,8 @@ type AuditEvent struct {
 type Blob struct {
 	Path string
 	// Key selects the schema in schema_per_project tenancy.
-	Key string
+	Key          string
+	LastModified time.Time
 }
 
 // ListOptions narrows state listings.
@@ -203,7 +204,12 @@ type ListOptions struct {
 
 // Tx is the set of operations that run inside one storage transaction.
 type Tx interface {
+	// GetLock reads and, where the store can, row-locks the lock, so that a
+	// write it fences cannot interleave with an unlock.
 	GetLock(ctx context.Context, key string) (*Lock, error)
+	// PeekLock reads the lock without row-locking it. Reporting a conflict
+	// needs nothing stronger, and many losers can do so at once.
+	PeekLock(ctx context.Context, key string) (*Lock, error)
 	// InsertLock atomically acquires a lock. It returns false when a lock
 	// already exists for the key, without error.
 	InsertLock(ctx context.Context, l *Lock) (bool, error)
@@ -233,7 +239,7 @@ type Store interface {
 	ListStates(ctx context.Context, opts ListOptions) ([]StateMeta, error)
 	ListLocks(ctx context.Context) ([]Lock, error)
 
-	// Blobs. PutBlob is called before the metadata transaction.
+	// Blobs hold gzip bytes. PutBlob is called before the metadata transaction.
 	PutBlob(ctx context.Context, key, versionID string, gz []byte) (string, error)
 	GetBlob(ctx context.Context, key, path string) ([]byte, error)
 	RemoveBlob(ctx context.Context, key, path string) error

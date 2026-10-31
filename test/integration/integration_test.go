@@ -1,0 +1,549 @@
+//go:build integration
+
+// Package integration runs against a real Snowflake account (SPEC §12.3). It
+// needs the SNOWSTATE_IT_* variables and skips itself when they are unset.
+// Each run works in a throwaway schema BACKEND_IT_<random>.
+package integration
+
+import (
+	"bytes"
+	"compress/zlib"
+	"context"
+	"crypto/md5"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/thunter/snowstate/pkg/snowstate/ids"
+	"github.com/thunter/snowstate/pkg/snowstate/service"
+	"github.com/thunter/snowstate/pkg/snowstate/sfconn"
+	"github.com/thunter/snowstate/pkg/snowstate/store"
+	"github.com/thunter/snowstate/pkg/snowstate/store/snowflake"
+)
+
+var (
+	schema string
+	admin  *sql.DB
+	alice  = service.Principal{Name: "alice", Source: "snowflake"}
+)
+
+func connConfig(schemaName string) sfconn.Config {
+	return sfconn.Config{
+		Account:              os.Getenv("SNOWSTATE_IT_ACCOUNT"),
+		User:                 os.Getenv("SNOWSTATE_IT_USER"),
+		Role:                 os.Getenv("SNOWSTATE_IT_ROLE"),
+		Warehouse:            os.Getenv("SNOWSTATE_IT_WAREHOUSE"),
+		Database:             os.Getenv("SNOWSTATE_IT_DATABASE"),
+		Schema:               schemaName,
+		Auth:                 os.Getenv("SNOWSTATE_IT_AUTH"),
+		PrivateKeyPath:       os.Getenv("SNOWSTATE_IT_PRIVATE_KEY_PATH"),
+		PrivateKeyPassphrase: os.Getenv("SNOWSTATE_IT_PRIVATE_KEY_PASSPHRASE"),
+		QueryTag:             "snowstate_it",
+		LockTimeout:          30 * time.Second,
+		Pool:                 sfconn.Pool{MaxOpen: 30, MaxIdle: 30, ConnMaxLifetime: time.Hour},
+	}
+}
+
+func TestMain(m *testing.M) {
+	if os.Getenv("SNOWSTATE_IT_ACCOUNT") == "" {
+		fmt.Println("SNOWSTATE_IT_* not set, skipping integration tests")
+		os.Exit(0)
+	}
+	schema = "BACKEND_IT_" + strings.ToUpper(strings.ReplaceAll(ids.V4(), "-", "")[:12])
+	ctx := context.Background()
+	var err error
+	admin, err = sfconn.Open(ctx, connConfig(""))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	db := os.Getenv("SNOWSTATE_IT_DATABASE")
+	if _, err := admin.ExecContext(ctx, "CREATE SCHEMA "+db+"."+schema); err != nil {
+		fmt.Fprintln(os.Stderr, "create schema:", err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	if _, err := admin.ExecContext(ctx, "DROP SCHEMA IF EXISTS "+db+"."+schema); err != nil {
+		fmt.Fprintln(os.Stderr, "drop schema:", err)
+		code = 1
+	}
+	_ = admin.Close()
+	os.Exit(code)
+}
+
+func newStore(t *testing.T) *snowflake.Store {
+	t.Helper()
+	db, err := sfconn.Open(context.Background(), connConfig(schema))
+	require.NoError(t, err)
+	st := snowflake.New(snowflake.Options{
+		DB: db, Database: os.Getenv("SNOWSTATE_IT_DATABASE"), Schema: schema, QueryTag: "snowstate_it",
+	})
+	t.Cleanup(func() { _ = st.Close() })
+	_, err = st.Migrate(context.Background(), false)
+	require.NoError(t, err)
+	return st
+}
+
+func newService(t *testing.T, st store.Store, mutate ...func(*service.Options)) *service.Service {
+	t.Helper()
+	opts := service.Options{Store: st, InlineMaxBytes: 8 << 20, AllowForceUnlock: true, LogReads: true}
+	for _, m := range mutate {
+		m(&opts)
+	}
+	s := service.New(opts)
+	t.Cleanup(s.Close)
+	return s
+}
+
+func key(t *testing.T) string {
+	t.Helper()
+	return "it/" + strings.ReplaceAll(t.Name(), "/", "-") + "/" + ids.V4()[:8]
+}
+
+func body(serial int) []byte {
+	return []byte(fmt.Sprintf(`{"version":4,"terraform_version":"1.9.0","serial":%d,"lineage":"l-1","resources":[{"mode":"managed","type":"aws_s3_bucket","name":"b","provider":"provider[\"x\"]","instances":[{"attributes":{"secret":"nope"}}]}]}`, serial))
+}
+
+func TestMigrationsAreIdempotent(t *testing.T) {
+	st := newStore(t)
+	res, err := st.Migrate(context.Background(), false)
+	require.NoError(t, err)
+	assert.Empty(t, res.Applied, "second run does nothing")
+
+	dry, err := st.Migrate(context.Background(), true)
+	require.NoError(t, err)
+	assert.Empty(t, dry.Applied)
+
+	applied, latest, err := st.SchemaVersion(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, latest, applied)
+
+	hybrid, err := st.LocksAreHybrid(context.Background())
+	require.NoError(t, err)
+	assert.True(t, hybrid)
+
+	supported, err := st.HybridSupported(context.Background())
+	require.NoError(t, err)
+	assert.True(t, supported)
+}
+
+func storageCases() []struct {
+	name   string
+	inline int64
+	want   string
+} {
+	return []struct {
+		name   string
+		inline int64
+		want   string
+	}{{"inline", 8 << 20, store.StorageInline}, {"stage", 1, store.StorageStage}}
+}
+
+func TestRoundTripInlineAndStage(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	for _, tc := range storageCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newService(t, st, func(o *service.Options) { o.InlineMaxBytes = tc.inline })
+			k := key(t)
+
+			got, err := s.Get(ctx, alice, k)
+			require.NoError(t, err)
+			assert.Nil(t, got)
+
+			v1, err := s.Put(ctx, alice, k, "", body(1), nil)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, v1.Storage)
+
+			got, err = s.Get(ctx, alice, k)
+			require.NoError(t, err)
+			assert.Equal(t, body(1), got.Body)
+			assert.Equal(t, v1.ID, got.VersionID)
+
+			noop, err := s.Put(ctx, alice, k, "", body(1), nil)
+			require.NoError(t, err)
+			assert.Equal(t, v1.ID, noop.ID, "identical bytes make no version")
+
+			v2, err := s.Put(ctx, alice, k, "", body(2), nil)
+			require.NoError(t, err)
+			assert.NotEqual(t, v1.ID, v2.ID)
+
+			vs, err := st.ListVersions(ctx, k, 0)
+			require.NoError(t, err)
+			require.Len(t, vs, 2)
+			assert.Equal(t, v2.ID, vs[0].ID, "newest first")
+
+			old, err := st.GetVersion(ctx, k, v1.ID)
+			require.NoError(t, err)
+			assert.Equal(t, int64(1), old.Serial)
+
+			_, err = st.GetVersion(ctx, k, "missing")
+			require.ErrorIs(t, err, store.ErrNotFound)
+
+			require.NoError(t, s.Delete(ctx, alice, k, ""))
+			got, err = s.Get(ctx, alice, k)
+			require.NoError(t, err)
+			assert.Nil(t, got, "soft deleted")
+
+			meta, err := st.GetState(ctx, k)
+			require.NoError(t, err)
+			assert.True(t, meta.Deleted())
+			assert.NotEmpty(t, meta.CurrentVersionID)
+
+			listed, err := st.ListStates(ctx, store.ListOptions{Prefix: k})
+			require.NoError(t, err)
+			assert.Empty(t, listed)
+			listed, err = st.ListStates(ctx, store.ListOptions{Prefix: k, IncludeDeleted: true})
+			require.NoError(t, err)
+			assert.Len(t, listed, 1)
+		})
+	}
+}
+
+// §6.3 VERIFY: the largest inline payload must bind. This body deflates to just
+// under the default inline_max_bytes of 8 MiB.
+func TestInlineMaxBinds(t *testing.T) {
+	st := newStore(t)
+	s := newService(t, st)
+	ctx := context.Background()
+	k := key(t)
+
+	build := func(n int) []byte {
+		blob := make([]byte, n)
+		_, err := rand.Read(blob)
+		require.NoError(t, err)
+		return []byte(`{"version":4,"serial":1,"lineage":"l","pad":"` + hex.EncodeToString(blob) + `"}`)
+	}
+	const target = 8<<20 - 64<<10
+	n := 4 << 20
+	n = n * target / deflatedSize(t, build(n))
+	large := build(n)
+	size := deflatedSize(t, large)
+	require.LessOrEqual(t, size, 8<<20)
+	require.Greater(t, size, 7<<20)
+	t.Logf("inline payload: %d bytes", size)
+
+	v, err := s.Put(ctx, alice, k, "", large, nil)
+	require.NoError(t, err)
+	assert.Equal(t, store.StorageInline, v.Storage)
+
+	got, err := s.Get(ctx, alice, k)
+	require.NoError(t, err)
+	assert.Equal(t, md5.Sum(large), md5.Sum(got.Body))
+}
+
+func deflatedSize(t *testing.T, body []byte) int {
+	t.Helper()
+	var buf bytes.Buffer
+	w, err := zlib.NewWriterLevel(&buf, zlib.BestSpeed)
+	require.NoError(t, err)
+	_, err = w.Write(body)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	return buf.Len()
+}
+
+func TestLongestKey(t *testing.T) {
+	st := newStore(t)
+	s := newService(t, st)
+	ctx := context.Background()
+	k := "it/" + strings.Repeat("k", 509)
+	require.Len(t, k, 512)
+	_ = s.Delete(ctx, alice, k, "")
+	lock, err := s.Lock(ctx, alice, service.LockRequest{Key: k, Who: "w", Source: store.SourcePSS})
+	require.NoError(t, err)
+	_, err = s.Unlock(ctx, alice, k, lock.LockID, false)
+	require.NoError(t, err)
+}
+
+func httpLock(k, id string) service.LockRequest {
+	return service.LockRequest{
+		Key: k, LockID: id, Who: "w@h", Operation: "OperationTypeApply", Source: store.SourceHTTP,
+		RawJSON: []byte(`{"ID":"` + id + `","Who":"w@h","Operation":"OperationTypeApply"}`),
+	}
+}
+
+func TestLockLifecycle(t *testing.T) {
+	st := newStore(t)
+	s := newService(t, st)
+	ctx := context.Background()
+	k := key(t)
+
+	l, err := s.Lock(ctx, alice, httpLock(k, "L1"))
+	require.NoError(t, err)
+	assert.Equal(t, "alice", l.AcquiredBy)
+
+	again, err := s.Lock(ctx, alice, httpLock(k, "L1"))
+	require.NoError(t, err, "same ID is idempotent")
+	assert.Equal(t, l.LockID, again.LockID)
+
+	_, err = s.Lock(ctx, alice, httpLock(k, "L2"))
+	var locked *store.ErrLocked
+	require.ErrorAs(t, err, &locked)
+	assert.Equal(t, `{"ID":"L1","Who":"w@h","Operation":"OperationTypeApply"}`, string(service.LockInfoJSON(locked.Current)))
+
+	_, err = s.Put(ctx, alice, k, "", body(1), nil)
+	require.ErrorAs(t, err, &locked, "fenced without an ID")
+	_, err = s.Put(ctx, alice, k, "L1", body(1), nil)
+	require.NoError(t, err)
+
+	listed, err := st.ListLocks(ctx)
+	require.NoError(t, err)
+	found := false
+	for _, x := range listed {
+		found = found || x.Key == k
+	}
+	assert.True(t, found)
+
+	_, err = s.Unlock(ctx, alice, k, "L2", false)
+	var mismatch *store.ErrLockMismatch
+	require.ErrorAs(t, err, &mismatch)
+
+	_, err = s.Unlock(ctx, alice, k, "L1", false)
+	require.NoError(t, err)
+	cur, err := st.GetLock(ctx, k)
+	require.NoError(t, err)
+	assert.Nil(t, cur)
+
+	_, err = s.Put(ctx, alice, k, "L1", body(2), nil)
+	require.ErrorIs(t, err, store.ErrLockNotHeld)
+
+	_, err = s.Lock(ctx, alice, httpLock(k, "L3"))
+	require.NoError(t, err)
+	removed, err := s.Unlock(ctx, alice, k, "", true)
+	require.NoError(t, err)
+	assert.Equal(t, "L3", removed.LockID)
+}
+
+func TestProviderStyleLocksBlockHTTP(t *testing.T) {
+	st := newStore(t)
+	s := newService(t, st)
+	ctx := context.Background()
+	k := key(t)
+
+	pss, err := s.Lock(ctx, alice, service.LockRequest{Key: k, Who: "c@l", Operation: "apply", Source: store.SourcePSS})
+	require.NoError(t, err)
+	cur, err := st.GetLock(ctx, k)
+	require.NoError(t, err)
+	assert.Empty(t, cur.RawJSON)
+	assert.Contains(t, string(service.LockInfoJSON(cur)), "held via snowstate state_store")
+
+	_, err = s.Lock(ctx, alice, httpLock(k, "H"))
+	var locked *store.ErrLocked
+	require.ErrorAs(t, err, &locked)
+	_, err = s.Put(ctx, alice, k, pss.LockID, body(1), nil)
+	require.NoError(t, err)
+}
+
+// Release blocker for hybrid mode (§12.3): 25 goroutines on separate
+// connections race for one key, 10 rounds, exactly one winner each round.
+func TestConcurrentLockHasExactlyOneWinner(t *testing.T) {
+	st := newStore(t)
+	s := newService(t, st)
+	ctx := context.Background()
+	k := key(t)
+
+	for round := range 10 {
+		var wins atomic.Int32
+		var wrong atomic.Int32
+		var firstErr atomic.Value
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for g := range 25 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				_, err := s.Lock(ctx, alice, httpLock(k, fmt.Sprintf("r%d-g%d", round, g)))
+				var locked *store.ErrLocked
+				switch {
+				case err == nil:
+					wins.Add(1)
+				case errors.As(err, &locked):
+				default:
+					wrong.Add(1)
+					firstErr.Store(err.Error())
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		require.Equal(t, int32(0), wrong.Load(), "round %d: unexpected error %v", round, firstErr.Load())
+		require.Equal(t, int32(1), wins.Load(), "round %d", round)
+		_, err := s.Unlock(ctx, alice, k, "", true)
+		require.NoError(t, err)
+	}
+}
+
+func TestWriteTransactionIsAtomic(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	k := key(t)
+	boom := errors.New("injected between steps 3 and 4")
+	s := newService(t, st, func(o *service.Options) { o.AfterInsertVersion = func() error { return boom } })
+
+	_, err := s.Put(ctx, alice, k, "", body(1), nil)
+	require.ErrorIs(t, err, boom)
+
+	meta, err := st.GetState(ctx, k)
+	require.NoError(t, err)
+	assert.Nil(t, meta, "no visible current version")
+
+	vs, err := st.ListVersions(ctx, k, 0)
+	require.NoError(t, err)
+	assert.Empty(t, vs, "version row rolled back")
+
+	var ok int
+	require.NoError(t, admin.QueryRowContext(ctx, fmt.Sprintf(
+		"SELECT COUNT(*) FROM %s.%s.AUDIT_LOG WHERE STATE_KEY = ? AND RESULT = 'OK'",
+		os.Getenv("SNOWSTATE_IT_DATABASE"), schema), k).Scan(&ok))
+	assert.Zero(t, ok, "no audit row")
+}
+
+func TestAuditRowsAreWritten(t *testing.T) {
+	st := newStore(t)
+	s := newService(t, st, func(o *service.Options) { o.AuditDetail = map[string]any{"run_id": "42"} })
+	ctx := store.WithRequestMeta(context.Background(), store.RequestMeta{RequestID: "req-1", RemoteAddr: "10.0.0.1"})
+	k := key(t)
+
+	_, err := s.Lock(ctx, alice, httpLock(k, "L1"))
+	require.NoError(t, err)
+	_, err = s.Put(ctx, alice, k, "L1", body(1), nil)
+	require.NoError(t, err)
+	_, err = s.Get(ctx, alice, k)
+	require.NoError(t, err)
+	_, err = s.Unlock(ctx, alice, k, "", true)
+	require.NoError(t, err)
+	s.FlushAudit()
+
+	rows, err := admin.QueryContext(ctx, fmt.Sprintf(
+		`SELECT ACTION, DETAIL:run_id::string, REQUEST_ID FROM %s.%s.AUDIT_LOG WHERE STATE_KEY = ?`,
+		os.Getenv("SNOWSTATE_IT_DATABASE"), schema), k)
+	require.NoError(t, err)
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var action, run, req string
+		require.NoError(t, rows.Scan(&action, &run, &req))
+		assert.Equal(t, "42", run)
+		assert.Equal(t, "req-1", req)
+		seen[action] = true
+	}
+	require.NoError(t, rows.Err())
+	for _, want := range []string{"LOCK", "PUT", "GET", "FORCE_UNLOCK"} {
+		assert.True(t, seen[want], want)
+	}
+}
+
+func TestInventoryView(t *testing.T) {
+	st := newStore(t)
+	s := newService(t, st)
+	ctx := context.Background()
+	k := key(t)
+	_, err := s.Put(ctx, alice, k, "", body(1), nil)
+	require.NoError(t, err)
+
+	var rType, name, mode string
+	var count int
+	require.NoError(t, admin.QueryRowContext(ctx, fmt.Sprintf(
+		"SELECT RESOURCE_TYPE, RESOURCE_NAME, MODE, INSTANCE_COUNT FROM %s.%s.STATE_RESOURCES WHERE STATE_KEY = ?",
+		os.Getenv("SNOWSTATE_IT_DATABASE"), schema), k).Scan(&rType, &name, &mode, &count))
+	assert.Equal(t, "aws_s3_bucket", rType)
+	assert.Equal(t, "b", name)
+	assert.Equal(t, "managed", mode)
+	assert.Equal(t, 1, count)
+}
+
+// A state too large for DECOMPRESS_STRING must not break the view for everyone.
+func TestInventoryViewSurvivesLargeState(t *testing.T) {
+	st := newStore(t)
+	s := newService(t, st)
+	ctx := context.Background()
+	small, big := key(t), key(t)
+	_, err := s.Put(ctx, alice, small, "", body(1), nil)
+	require.NoError(t, err)
+
+	large := []byte(`{"version":4,"serial":1,"lineage":"l","resources":[{"mode":"managed","type":"big","name":"` +
+		strings.Repeat("x", 120<<20) + `","instances":[]}]}`)
+	v, err := s.Put(ctx, alice, big, "", large, nil)
+	require.NoError(t, err)
+	require.Equal(t, store.StorageInline, v.Storage, "this compressible body stays inline")
+
+	got, err := s.Get(ctx, alice, big)
+	require.NoError(t, err)
+	assert.Equal(t, md5.Sum(large), md5.Sum(got.Body))
+
+	db := os.Getenv("SNOWSTATE_IT_DATABASE")
+	var n int
+	require.NoError(t, admin.QueryRowContext(ctx, fmt.Sprintf(
+		"SELECT COUNT(*) FROM %s.%s.STATE_RESOURCES WHERE STATE_KEY = ?", db, schema), small).Scan(&n))
+	assert.Equal(t, 1, n, "the small state is still listed")
+	require.NoError(t, admin.QueryRowContext(ctx, fmt.Sprintf(
+		"SELECT COUNT(*) FROM %s.%s.STATE_RESOURCES WHERE STATE_KEY = ?", db, schema), big).Scan(&n))
+	t.Logf("large state rows in view: %d", n)
+}
+
+func TestTokens(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	id := ids.V4()
+	exp := time.Now().Add(time.Hour).UTC()
+	tok := &store.Token{ID: id, Principal: "ci", HMAC: strings.Repeat("a", 60) + id[:4],
+		Scopes: []store.Scope{{KeyPattern: "platform/*", Permissions: []string{"read", "lock"}}}, ExpiresAt: &exp}
+	require.NoError(t, st.CreateToken(ctx, tok))
+
+	got, err := st.GetTokenByHMAC(ctx, tok.HMAC)
+	require.NoError(t, err)
+	assert.Equal(t, tok.Scopes, got.Scopes)
+	assert.WithinDuration(t, exp, *got.ExpiresAt, time.Second)
+	assert.Nil(t, got.RevokedAt)
+
+	require.NoError(t, st.TouchToken(ctx, id, time.Now()))
+	require.NoError(t, st.RevokeToken(ctx, id))
+	got, err = st.GetTokenByHMAC(ctx, tok.HMAC)
+	require.NoError(t, err)
+	assert.NotNil(t, got.RevokedAt)
+	assert.NotNil(t, got.LastUsedAt)
+
+	all, err := st.ListTokens(ctx)
+	require.NoError(t, err)
+	assert.NotEmpty(t, all)
+
+	require.ErrorIs(t, st.RevokeToken(ctx, "missing"), store.ErrNotFound)
+	_, err = st.GetTokenByHMAC(ctx, "missing")
+	require.ErrorIs(t, err, store.ErrNotFound)
+}
+
+func TestBlobPrimitives(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	k := key(t)
+	p, err := st.PutBlob(ctx, k, "v1", []byte("\x1f\x8bnot really gzip"))
+	require.NoError(t, err)
+	got, err := st.GetBlob(ctx, k, p)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("\x1f\x8bnot really gzip"), got)
+
+	blobs, err := st.ListBlobs(ctx)
+	require.NoError(t, err)
+	found := false
+	for _, b := range blobs {
+		found = found || b.Path == p
+	}
+	assert.True(t, found, "listed %v", blobs)
+
+	require.NoError(t, st.RemoveBlob(ctx, k, p))
+	_, err = st.GetBlob(ctx, k, p)
+	require.ErrorIs(t, err, store.ErrNotFound)
+}

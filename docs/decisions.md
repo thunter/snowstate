@@ -112,3 +112,70 @@ which would make audit rows useless, so `LoopbackSecret.Identity` replaces it wi
 **D14. After `--shutdown-grace` following a second signal, the child is killed.** §8.1 says the server stops then, and
 leaving a child running against a dead backend would only produce confusing errors. The lock stays held and the release
 command is printed.
+
+## Snowflake verification (M3)
+
+Verified on account `IK96809`, region `AWS_AP_SOUTHEAST_6`, Snowflake 10.39.101, gosnowflake v1.19.1.
+
+| VERIFY | Outcome |
+|---|---|
+| Hybrid PK violation code (§6.5) | Number **200001**, SQLSTATE 22000. Matched on the number. |
+| Single transaction across hybrid and standard tables | Works: `INSERT` into both then `COMMIT`. `FOR UPDATE` on a hybrid row also works inside it. |
+| `DECOMPRESS_STRING(..., 'GZIP')` (§6.2) | **Does not work.** Error 100194 `Unknown compression method 'gzip'`. See D15. |
+| Maximum BINARY bind (§6.3) | An 8.2 MB (7.8 MiB) payload binds and round-trips, so the 8 MiB default stands. `TestInlineMaxBinds` keeps this honest. |
+| Key length on a hybrid PK | 512 characters works. |
+| BCR 2025_03 | `RELEASED`; `BINARY(67108864)` is accepted. |
+| Concurrency test, hybrid (§12.3) | **Passed**: exactly one winner in each of 10 rounds of 25 goroutines. |
+| Standard-table `MERGE` with binds | Needs explicit casts (`?::VARCHAR`), used throughout. |
+| WIF field names (§5.2) | `Authenticator = AuthTypeWorkloadIdentityFederation`, `WorkloadIdentityProvider`, `Token`. Exercised in M6.5. |
+| Stream PUT/GET | `WithFileStream` for PUT; `WithFileTransferOptions{GetFileToStream:true}` + `WithFileGetStream` for GET. The object name comes from the base name of the file URL. A GET that matches nothing returns driver error 264004. |
+
+Error numbers acted on (`store/snowflake/errors.go`): 200001 (duplicate key), 200010 and 200012 (hybrid row contention),
+264004 (no files to GET), 2003 and 3001 (access), 390114 (session expired), 606 (warehouse), 625/628/630 (timeouts).
+
+**D15. Inline blobs are zlib, not gzip.** §6.2 said to switch encoding if gzip did not work. Snowflake's `COMPRESS` supports
+`SNAPPY`, `ZLIB`, `ZSTD` and `BZ2`. Go's `compress/zlib` output (RFC 1950) decompresses unchanged, with no framing
+prefix. Inline bytes are now zlib, and the column is `CONTENT_ZLIB` rather than `CONTENT_GZIP`, since nothing had been
+deployed. Stage blobs stay gzip with `.json.gz`, as §6.3 specifies.
+
+**D16. The inventory view is guarded.** There is no `TRY_DECOMPRESS_STRING`, and one bad row would fail the view for
+every state. The view uses `IFF(SIZE_BYTES <= 134217728, DECOMPRESS_STRING(...), NULL)` and `TRY_PARSE_JSON`. A state
+beyond VARCHAR's 128 MiB maximum is absent from the view rather than breaking it. A 120 MiB state was tested and is listed.
+
+**D17. Row contention is retried for up to 30 s.** Inside a transaction, a statement that would wait on a hybrid row lock
+is aborted (200010), and a row's wait queue is capped at about 20 (200012). `InTx` rolls back and retries with jitter for
+up to `LOCK_TIMEOUT`'s default of 30 s, then returns `ErrUnavailable`, which clients see as `503` and retry. This is safe
+because a retried transaction only ever loses to the primary key.
+
+**D18. `Lock` reads first, and the lock row is the last statement.** §6.5 inserts and reads on violation. Doing that in a
+transaction caused a priority inversion on the real account: blocked `INSERT`s occupy warehouse concurrency slots, the
+winner's next statement queues behind them, and everyone stalls until `LOCK_TIMEOUT`. The order is now plain read, audit
+insert, lock insert, `COMMIT`, so the winner holds the row only through `COMMIT`, and a loser's rollback removes its audit
+row. A visibly held lock is reported with no write. The primary key still decides a true race. This costs one extra
+`SELECT` per LOCK and took the 25-goroutine, 10-round test from 307 s to 38 s with no stalls.
+
+**D19. The write fence uses `SELECT ... FOR UPDATE`.** §6.4 uses a plain read. Under READ COMMITTED a force-unlock plus a
+new acquire could otherwise land between a holder's fence check and its commit. The row lock makes them wait. Conflict
+reporting uses `Tx.PeekLock`, which takes no row lock, otherwise losers queue up just to report a conflict.
+
+**D20. `net/http` in `sfconn`.** §3's rule says nothing under `pkg/` imports `net/http`, and that `TestImportBoundaries`
+runs `go list -deps ./pkg/...`. gosnowflake itself depends on `net/http`, so that literal check cannot pass. The test
+instead enforces three things: nothing in `pkg/` imports `internal/` or Terraform libraries, no package except `sfconn`
+imports `net/http` directly (§5.2 needs it to fetch GitHub OIDC tokens), and the core (`service`, `keys`, `store/memory`)
+is free of `net/http` and gosnowflake transitively.
+
+**D21. `SCHEMA_MIGRATIONS` has a `SCOPE` column.** `schema_per_project` tracks versions per schema in one control table,
+so the key is `(SCOPE, VERSION)`, not `VERSION` as in §6.1. `AUDIT_LOG` also exists in the control schema for rows with no
+state key (token admin, GC). `PROJECTS` always exists, though it is only used in `schema_per_project`.
+
+**D22. New dependency: `github.com/youmark/pkcs8`.** The stdlib cannot read encrypted PKCS#8 keys, which `private_key_passphrase`
+needs.
+
+**D23. `doctor` checks that `LOCKS` is hybrid, rather than creating a hybrid table.** The runtime role has no DDL, by design
+(§10.5). `HybridSupported`, which does create one, is for `migrate`.
+
+**D24. Driver logging is off.** `sfconn` sets gosnowflake's log level to `fatal` so that SQL text cannot reach logs.
+
+**Integration environment note.** `SNOWSTATE_IT_ACCOUNT` in `~/.config/snowstate/it.env` still held the `dev_setup.md`
+placeholder `orgname-accountname` during this build. Every other value matched the `snowstate_dev` connection, so test
+runs set the account from that connection for the process only. `it.env` was not changed.
