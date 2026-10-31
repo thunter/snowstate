@@ -179,3 +179,44 @@ needs.
 **Integration environment note.** `SNOWSTATE_IT_ACCOUNT` in `~/.config/snowstate/it.env` still held the `dev_setup.md`
 placeholder `orgname-accountname` during this build. Every other value matched the `snowstate_dev` connection, so test
 runs set the account from that connection for the process only. `it.env` was not changed.
+
+## M4 decisions
+
+**D25. `lock release` asks first.** §8 gives `snowstate lock release <key> [--force]` without saying what `--force`
+changes. Without it the holder is shown and the command asks for confirmation, and with no answer (a script, closed stdin)
+it refuses. `--force` skips the question. Both audit `FORCE_UNLOCK`.
+
+**D26. Operators can always release locks.** `locking.allow_force_unlock=false` restricts the state API only.
+`DELETE /v1/admin/locks/...` (which needs `admin`) and the CLI still work, otherwise a stuck lock could not be cleared.
+
+**D27. Restore bypasses the serial guard.** A restore goes backwards on purpose, and its bytes cannot change, so
+`state.reject_serial_regression` does not apply to it. The new version has the old serial and sets `RESTORED_FROM`.
+
+**D28. Restoring content that is already current is a no-op**, matching idempotent PUT, and returns the current version.
+
+**D29. GC rules.** A version goes only when it fails both `keep_versions` and `keep_days`. The current version always
+stays. `keep_versions: 0` means unlimited. A locked state is never purged. GC removes the pointer, then rows, then blobs,
+so a crash can leave orphans but never a row pointing at a missing blob.
+
+**D30. Orphan blobs must be an hour old.** Blobs upload before the metadata transaction, so a recent unreferenced blob may
+be a write in flight. A blob with an unreadable timestamp is treated as recent, so it is kept. A test confirms real `LIST`
+timestamps parse.
+
+**D31. Project name collisions are refused.** `P_<PROJECT>` maps `my-app` and `my_app` to one schema, which would silently
+merge tenants. `project create` refuses the second, because the schema is an isolation boundary.
+
+**D32. `Principal.Scopes` extends §3's `Principal`** so the scope authorizer stays stateless.
+
+**D33. Project roles' grants.** §5.3's lists are applied by `--permissions`: `read` gives `SELECT` on the tables and `READ`
+on the stage, `lock` gives `SELECT, INSERT, DELETE` on `LOCKS`, `write` gives the `STATES`, `STATE_VERSIONS` and stage
+privileges. Every role gets `INSERT` on `AUDIT_LOG`, and `USAGE` plus read access to the control tables that listing and
+`migrate` checks need.
+
+### Open: role isolation is not verified on a real account
+
+`TestSchemaPerProjectIsolation` (§12.3) is written but **has not run**. It needs two roles the test user can assume, each
+with `USAGE` on the warehouse. During this build the environment's permission policy refused an attempt to create a test
+role and grant it, and `SNOWSTATE_DEV` also holds warehouse `USAGE` without `GRANT OPTION`. So `TestSchemaPerProjectRouting`
+(no grants) is what ran. Whether `FOR UPDATE` on `LOCKS` needs more than `SELECT, INSERT, DELETE` is therefore also
+unconfirmed. To run it, an admin creates the roles per `dev_setup.md` §3.2 and sets `SNOWSTATE_IT_ROLE_A` and
+`SNOWSTATE_IT_ROLE_B`.

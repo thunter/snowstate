@@ -7,9 +7,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -405,4 +407,135 @@ while [ $n -lt 40 ]; do sleep 0.1; n=$((n+1)); done
 		require.NoError(t, err)
 		assert.Equal(t, 1, strings.Count(string(raw), "hit"), sig.String())
 	}
+}
+
+// The admin CLI against the test store, with a real token-mode server and a
+// real client authenticating with a token from `token create`.
+func TestTokensAndAdminCLI(t *testing.T) {
+	const pepper = "e2e-pepper-e2e-pepper-e2e-pepper-1234"
+	snapshot := filepath.Join(t.TempDir(), "store.json")
+	env := append(baseEnv(), "SNOWSTATE_ALLOW_TEST_STORE=1", "SNOWSTATE_TEST_STORE_FILE="+snapshot,
+		"SNOWSTATE_TOKEN_PEPPER="+pepper)
+	cli := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(binary, append(args, "--store=memory")...)
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s\n%s", strings.Join(args, " "), out)
+		return string(out)
+	}
+
+	out := cli("token", "create", "--principal", "ci", "--scope", "platform/*:read,write,lock", "--expires", "1d", "--description", "e2e")
+	token := regexp.MustCompile(`sst_[A-Za-z0-9_-]{43}`).FindString(out)
+	require.NotEmpty(t, token, out)
+	id := regexp.MustCompile(`id:\s+(\S+)`).FindStringSubmatch(out)[1]
+
+	listed := cli("token", "list")
+	assert.Contains(t, listed, "platform/*:read,write,lock")
+	assert.NotContains(t, listed, token, "the token is printed once")
+
+	cmd := exec.Command(binary, "serve", "--store=memory", "--listen=127.0.0.1:0")
+	cmd.Env = env
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	url := "http://" + waitForAddr(t, stdout)
+
+	c := clients[len(clients)-1]
+	u := url + "/v1/states/platform/app/prod"
+	w := newWorkdir(t, c, fmt.Sprintf(`terraform {
+  backend "http" {
+    address = %q
+    lock_address = %q
+    unlock_address = %q
+    username = "ci"
+  }
+}
+resource "terraform_data" "d" { input = "x" }
+`, u, u, u))
+
+	denied, err := w.run("init")
+	require.Error(t, err, "no password yet\n%s", denied)
+	assert.Contains(t, denied, "requires auth")
+
+	w.env = append(w.env, "TF_HTTP_PASSWORD="+token)
+	w.ok("init")
+	w.ok("apply", "-auto-approve")
+
+	other := newWorkdir(t, c, fmt.Sprintf(`terraform {
+  backend "http" {
+    address = %q
+    username = "ci"
+  }
+}
+`, url+"/v1/states/other/app/prod"))
+	other.env = append(other.env, "TF_HTTP_PASSWORD="+token)
+	out2, err := other.run("init")
+	require.Error(t, err, "scope denies another project\n%s", out2)
+	assert.Contains(t, out2, "invalid auth")
+
+	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
+	require.NoError(t, cmd.Wait(), "graceful exit")
+
+	key := "platform/app/prod"
+	assert.Contains(t, cli("state", "list"), "platform/app")
+	versions := cli("state", "versions", key)
+	first := regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f-]{27}`).FindString(versions)
+	require.NotEmpty(t, first, versions)
+
+	pulled := filepath.Join(t.TempDir(), "state.json")
+	cli("state", "pull", key, "-o", pulled, "--version", first)
+	raw, err := os.ReadFile(pulled)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "terraform_data")
+	assert.Contains(t, cli("state", "pull", key), "terraform_data")
+
+	assert.Contains(t, cli("state", "restore", key, "--version", first), "restored as version")
+	assert.Contains(t, cli("lock", "list"), "KEY")
+	assert.Contains(t, cli("lock", "release", key), "no lock held")
+	assert.Contains(t, cli("gc", "--dry-run"), "would remove")
+	assert.Contains(t, cli("gc"), "removed")
+
+	assert.Contains(t, cli("token", "revoke", id), "revoked")
+	events, err := memory.ReadSnapshotAudit(snapshot)
+	require.NoError(t, err)
+	assert.Contains(t, auditActions(events), store.ActionTokenCreate)
+	assert.Contains(t, auditActions(events), store.ActionTokenRevoke)
+}
+
+func TestLockReleaseAsksFirst(t *testing.T) {
+	snapshot := filepath.Join(t.TempDir(), "store.json")
+	env := append(baseEnv(), "SNOWSTATE_ALLOW_TEST_STORE=1", "SNOWSTATE_TEST_STORE_FILE="+snapshot)
+	key := "platform/stuck/prod"
+
+	s := startServerWithSnapshot(t, snapshot)
+	req, err := http.NewRequest("LOCK", s+"/v1/states/"+key, strings.NewReader(`{"ID":"L1","Who":"bob","Operation":"apply"}`))
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.StatusCode)
+	require.NoError(t, resp.Body.Close())
+
+	run := func(stdin string, args ...string) (string, error) {
+		cmd := exec.Command(binary, append([]string{"lock", "release", key, "--store=memory"}, args...)...)
+		cmd.Env = env
+		cmd.Stdin = strings.NewReader(stdin)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	out, err := run("")
+	require.Error(t, err, "no answer means no")
+	assert.Contains(t, out, "bob")
+	assert.Contains(t, out, "--force")
+
+	out, err = run("n\n")
+	require.Error(t, err, out)
+
+	out, err = run("y\n")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "released lock L1")
 }

@@ -472,7 +472,8 @@ func (s *Service) checkFence(lock *store.Lock, lockID string) error {
 }
 
 func (s *Service) checkSerial(cur *store.StateMeta, v *store.Version) error {
-	if cur == nil || cur.Deleted() {
+	// A restore goes backwards on purpose, and its bytes cannot be changed.
+	if cur == nil || cur.Deleted() || v.RestoredFrom != "" {
 		return nil
 	}
 	if cur.Lineage != v.Lineage {
@@ -679,9 +680,17 @@ func (s *Service) Unlock(ctx context.Context, p Principal, key, lockID string, f
 		s.record(ctx, p, action, key, "", lockID, err)
 		return nil, err
 	}
+	return s.removeLock(ctx, p, key, lockID, force)
+}
 
+func (s *Service) removeLock(ctx context.Context, p Principal, key, lockID string, force bool) (*Lock, error) {
+	action := store.ActionUnlock
+	if force {
+		action = store.ActionForceUnlock
+	}
 	var removed *Lock
 	err := s.st.InTx(ctx, key, func(tx store.Tx) error {
+		removed = nil
 		cur, err := tx.GetLock(ctx, key)
 		if err != nil || cur == nil {
 			return err

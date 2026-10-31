@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -96,12 +97,23 @@ func forEachClient(t *testing.T, fn func(t *testing.T, c client)) {
 type server struct {
 	url      string
 	snapshot string
-	cmd      *exec.Cmd
 }
 
 func startServer(t *testing.T, extraEnv ...string) *server {
 	t.Helper()
 	snapshot := filepath.Join(t.TempDir(), "store.json")
+	return &server{url: startServerAt(t, snapshot, extraEnv...), snapshot: snapshot}
+}
+
+// startServerWithSnapshot starts a server on a chosen snapshot file. The test
+// must have finished with it before the CLI opens the same file.
+func startServerWithSnapshot(t *testing.T, snapshot string) string {
+	t.Helper()
+	return startServerAt(t, snapshot)
+}
+
+func startServerAt(t *testing.T, snapshot string, extraEnv ...string) string {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, binary, "serve", "--store=memory", "--listen=127.0.0.1:0", "--auth-mode=none")
 	cmd.Env = append(baseEnv(), "SNOWSTATE_ALLOW_TEST_STORE=1", "SNOWSTATE_TEST_STORE_FILE="+snapshot)
@@ -114,7 +126,12 @@ func startServer(t *testing.T, extraEnv ...string) *server {
 		cancel()
 		_ = cmd.Wait()
 	})
+	return "http://" + waitForAddr(t, stdout)
+}
 
+// waitForAddr reads the server's startup log line.
+func waitForAddr(t *testing.T, stdout io.Reader) string {
+	t.Helper()
 	addr := make(chan string, 1)
 	go func() {
 		scanner := bufio.NewScanner(stdout)
@@ -130,10 +147,10 @@ func startServer(t *testing.T, extraEnv ...string) *server {
 	}()
 	select {
 	case a := <-addr:
-		return &server{url: "http://" + a, snapshot: snapshot, cmd: cmd}
+		return a
 	case <-time.After(30 * time.Second):
 		t.Fatal("server did not start")
-		return nil
+		return ""
 	}
 }
 

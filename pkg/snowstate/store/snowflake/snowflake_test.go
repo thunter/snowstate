@@ -115,3 +115,40 @@ func TestMigrationsLoadAndRender(t *testing.T) {
 		assert.NotContains(t, s, "--")
 	}
 }
+
+func TestGrantsFollowSpec(t *testing.T) {
+	st := New(Options{Database: "D", Schema: "S", Tenancy: TenancySchemaPerProject})
+	all := strings.Join(st.Grants("P_X", "R", []string{"read", "write", "lock"}), "\n")
+	assert.Contains(t, all, "GRANT SELECT, INSERT, UPDATE ON TABLE D.P_X.STATES TO ROLE R")
+	assert.Contains(t, all, "GRANT SELECT, INSERT ON TABLE D.P_X.STATE_VERSIONS TO ROLE R")
+	assert.Contains(t, all, "GRANT SELECT, INSERT, DELETE ON TABLE D.P_X.LOCKS TO ROLE R")
+	assert.Contains(t, all, "GRANT READ, WRITE ON STAGE D.P_X.STATE_BLOBS TO ROLE R")
+	assert.Contains(t, all, "GRANT INSERT ON TABLE D.P_X.AUDIT_LOG TO ROLE R")
+
+	// History is append-only for every permission set.
+	for _, line := range strings.Split(all, "\n") {
+		if strings.Contains(line, "STATE_VERSIONS") || strings.Contains(line, "AUDIT_LOG") {
+			assert.NotContains(t, line, "UPDATE", line)
+			assert.NotContains(t, line, "DELETE", line)
+		}
+	}
+
+	plan := strings.Join(st.Grants("P_X", "R", []string{"read", "lock"}), "\n")
+	assert.Contains(t, plan, "GRANT SELECT, INSERT, DELETE ON TABLE D.P_X.LOCKS TO ROLE R")
+	assert.NotContains(t, plan, "WRITE ON STAGE")
+	assert.NotContains(t, plan, "UPDATE")
+	assert.NotContains(t, plan, "INSERT ON TABLE D.P_X.STATE_VERSIONS")
+}
+
+func TestCreateProjectValidates(t *testing.T) {
+	ctx := context.Background()
+	shared := New(Options{Database: "D", Schema: "S"})
+	_, err := shared.CreateProject(ctx, ProjectRequest{Name: "x"})
+	require.ErrorContains(t, err, "schema_per_project")
+
+	split := New(Options{Database: "D", Schema: "S", Tenancy: TenancySchemaPerProject})
+	_, err = split.CreateProject(ctx, ProjectRequest{Name: "bad name"})
+	require.ErrorIs(t, err, store.ErrInvalidKey)
+	_, err = split.CreateProject(ctx, ProjectRequest{Name: "x", Role: "R; DROP"})
+	require.Error(t, err)
+}

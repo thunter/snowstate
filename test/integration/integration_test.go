@@ -547,3 +547,249 @@ func TestBlobPrimitives(t *testing.T) {
 	_, err = st.GetBlob(ctx, k, p)
 	require.ErrorIs(t, err, store.ErrNotFound)
 }
+
+func TestRestoreRoundTrip(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	for _, tc := range storageCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newService(t, st, func(o *service.Options) { o.InlineMaxBytes = tc.inline })
+			k := key(t)
+			v1, err := s.Put(ctx, alice, k, "", body(1), nil)
+			require.NoError(t, err)
+			_, err = s.Put(ctx, alice, k, "", body(2), nil)
+			require.NoError(t, err)
+
+			restored, err := s.Restore(ctx, alice, k, v1.ID, false)
+			require.NoError(t, err)
+			assert.Equal(t, v1.ID, restored.RestoredFrom)
+
+			got, err := s.Get(ctx, alice, k)
+			require.NoError(t, err)
+			assert.Equal(t, body(1), got.Body)
+			assert.Equal(t, restored.ID, got.VersionID)
+
+			vs, err := st.ListVersions(ctx, k, 0)
+			require.NoError(t, err)
+			assert.Len(t, vs, 3)
+			assert.Equal(t, v1.ID, vs[0].RestoredFrom)
+		})
+	}
+}
+
+func TestGCOnSnowflake(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	k := key(t)
+	// A negative OrphanMinAge skips the age check: this test owns its orphan.
+	s := newService(t, st, func(o *service.Options) {
+		o.InlineMaxBytes = 1
+		o.Retention = service.Retention{KeepVersions: 1, OrphanMinAge: -1}
+	})
+	v1, err := s.Put(ctx, alice, k, "", body(1), nil)
+	require.NoError(t, err)
+	v2, err := s.Put(ctx, alice, k, "", body(2), nil)
+	require.NoError(t, err)
+	old, err := st.GetVersion(ctx, k, v1.ID)
+	require.NoError(t, err)
+
+	orphan, err := st.PutBlob(ctx, k, "orphan", []byte("\x1f\x8b"))
+	require.NoError(t, err)
+
+	dry, err := s.GC(ctx, alice, true)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, dry.VersionsRemoved, 1)
+	assert.GreaterOrEqual(t, dry.BlobsRemoved, 1)
+
+	_, err = s.GC(ctx, alice, false)
+	require.NoError(t, err)
+
+	vs, err := st.ListVersions(ctx, k, 0)
+	require.NoError(t, err)
+	require.Len(t, vs, 1)
+	assert.Equal(t, v2.ID, vs[0].ID)
+
+	_, err = st.GetBlob(ctx, k, old.StagePath)
+	require.ErrorIs(t, err, store.ErrNotFound, "the removed version's blob is gone")
+	_, err = st.GetBlob(ctx, k, orphan)
+	require.ErrorIs(t, err, store.ErrNotFound, "the orphan is gone")
+
+	got, err := s.Get(ctx, alice, k)
+	require.NoError(t, err)
+	assert.Equal(t, body(2), got.Body)
+
+	blobs, err := st.ListBlobs(ctx)
+	require.NoError(t, err)
+	for _, b := range blobs {
+		if b.Path == vs[0].StagePath {
+			assert.False(t, b.LastModified.IsZero(), "LIST timestamps must parse, or orphans never age out")
+		}
+	}
+
+	require.NoError(t, s.Delete(ctx, alice, k, ""))
+	purge := newService(t, st, func(o *service.Options) { o.Retention = service.Retention{DeletedDays: 0} })
+	r, err := purge.GC(ctx, alice, false)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, r.StatesPurged, 1)
+	meta, err := st.GetState(ctx, k)
+	require.NoError(t, err)
+	assert.Nil(t, meta)
+}
+
+// Routing in schema_per_project, without any grants. The role-based isolation
+// checks are in TestSchemaPerProjectIsolation.
+func TestSchemaPerProjectRouting(t *testing.T) {
+	ctx := context.Background()
+	db, err := sfconn.Open(ctx, connConfig(""))
+	require.NoError(t, err)
+	suffix := strings.ToUpper(ids.V4()[:8])
+	control := "BACKEND_IT_CTL_" + suffix
+	st := snowflake.New(snowflake.Options{
+		DB: db, Database: os.Getenv("SNOWSTATE_IT_DATABASE"), Schema: "UNUSED", ControlSchema: control,
+		Tenancy: snowflake.TenancySchemaPerProject, QueryTag: "snowstate_it",
+	})
+	t.Cleanup(func() { _ = st.Close() })
+
+	projA, projB := "it"+suffix+"a", "it"+suffix+"b"
+	t.Cleanup(func() {
+		for _, schema := range []string{control, snowflake.ProjectSchema(projA), snowflake.ProjectSchema(projB)} {
+			_, err := admin.ExecContext(ctx, "DROP SCHEMA IF EXISTS "+os.Getenv("SNOWSTATE_IT_DATABASE")+"."+schema)
+			assert.NoError(t, err)
+		}
+	})
+
+	res, err := st.Migrate(ctx, false)
+	require.NoError(t, err)
+	assert.NotEmpty(t, res.Applied)
+
+	for _, name := range []string{projA, projB} {
+		_, err := st.CreateProject(ctx, snowflake.ProjectRequest{Name: name})
+		require.NoError(t, err)
+	}
+	projects, err := st.ListProjects(ctx)
+	require.NoError(t, err)
+	assert.Len(t, projects, 2)
+
+	s := newService(t, st)
+	keyA, keyB := projA+"/net/prod", projB+"/net/prod"
+	_, err = s.Put(ctx, alice, keyA, "", body(1), nil)
+	require.NoError(t, err)
+	_, err = s.Put(ctx, alice, keyB, "", body(2), nil)
+	require.NoError(t, err)
+
+	got, err := s.Get(ctx, alice, keyA)
+	require.NoError(t, err)
+	assert.Equal(t, body(1), got.Body)
+
+	var n int
+	dbName := os.Getenv("SNOWSTATE_IT_DATABASE")
+	require.NoError(t, admin.QueryRowContext(ctx, fmt.Sprintf(
+		"SELECT COUNT(*) FROM %s.%s.STATES", dbName, snowflake.ProjectSchema(projA))).Scan(&n))
+	assert.Equal(t, 1, n, "each schema holds only its own project")
+
+	all, err := st.ListStates(ctx, store.ListOptions{})
+	require.NoError(t, err)
+	assert.Len(t, all, 2, "listing spans projects")
+
+	_, err = s.Lock(ctx, alice, service.LockRequest{Key: keyB, Source: store.SourcePSS})
+	require.NoError(t, err)
+	locks, err := st.ListLocks(ctx)
+	require.NoError(t, err)
+	assert.Len(t, locks, 1)
+
+	require.NoError(t, admin.QueryRowContext(ctx, fmt.Sprintf(
+		"SELECT COUNT(*) FROM %s.%s.STATE_RESOURCES", dbName, control)).Scan(&n))
+	assert.Equal(t, 2, n, "the union view spans projects")
+
+	// "<name>_" and "<name>." sanitise to the same schema, which must be refused.
+	underscored, dotted := projA+"_", projA+"."
+	t.Cleanup(func() {
+		_, err := admin.ExecContext(ctx, "DROP SCHEMA IF EXISTS "+dbName+"."+snowflake.ProjectSchema(underscored))
+		assert.NoError(t, err)
+	})
+	_, err = st.CreateProject(ctx, snowflake.ProjectRequest{Name: underscored})
+	require.NoError(t, err)
+	_, err = st.CreateProject(ctx, snowflake.ProjectRequest{Name: dotted})
+	require.ErrorContains(t, err, "already used", "sanitising must not merge two projects")
+}
+
+// Role isolation (§12.3). It needs two pre-created roles, each granted to the
+// test user with USAGE on the warehouse (dev_setup.md §3.2):
+//
+//	SNOWSTATE_IT_ROLE_A, SNOWSTATE_IT_ROLE_B
+func TestSchemaPerProjectIsolation(t *testing.T) {
+	roleA, roleB := os.Getenv("SNOWSTATE_IT_ROLE_A"), os.Getenv("SNOWSTATE_IT_ROLE_B")
+	if roleA == "" || roleB == "" {
+		t.Skip("set SNOWSTATE_IT_ROLE_A and SNOWSTATE_IT_ROLE_B to run the role isolation test")
+	}
+	ctx := context.Background()
+	dbName := os.Getenv("SNOWSTATE_IT_DATABASE")
+	suffix := strings.ToUpper(ids.V4()[:8])
+	control := "BACKEND_IT_CTL_" + suffix
+	projA, projB := "it"+suffix+"a", "it"+suffix+"b"
+
+	open := func(role string) *snowflake.Store {
+		cfg := connConfig("")
+		cfg.Role = role
+		db, err := sfconn.Open(ctx, cfg)
+		require.NoError(t, err)
+		st := snowflake.New(snowflake.Options{
+			DB: db, Database: dbName, Schema: "UNUSED", ControlSchema: control,
+			Tenancy: snowflake.TenancySchemaPerProject, QueryTag: "snowstate_it",
+		})
+		t.Cleanup(func() { _ = st.Close() })
+		return st
+	}
+	owner := open(os.Getenv("SNOWSTATE_IT_ROLE"))
+	t.Cleanup(func() {
+		for _, schema := range []string{control, snowflake.ProjectSchema(projA), snowflake.ProjectSchema(projB)} {
+			_, err := admin.ExecContext(ctx, "DROP SCHEMA IF EXISTS "+dbName+"."+schema)
+			assert.NoError(t, err)
+		}
+	})
+	_, err := owner.Migrate(ctx, false)
+	require.NoError(t, err)
+	perms := []string{"read", "write", "lock"}
+	_, err = owner.CreateProject(ctx, snowflake.ProjectRequest{Name: projA, Role: roleA, Permissions: perms})
+	require.NoError(t, err)
+	_, err = owner.CreateProject(ctx, snowflake.ProjectRequest{Name: projB, Role: roleB, Permissions: perms})
+	require.NoError(t, err)
+
+	asA := newService(t, open(roleA))
+	keyA, keyB := projA+"/net/prod", projB+"/net/prod"
+
+	// Role A works in its own project, through a full write and read.
+	lock, err := asA.Lock(ctx, alice, httpLock(keyA, "A1"))
+	require.NoError(t, err)
+	_, err = asA.Put(ctx, alice, keyA, lock.LockID, body(1), nil)
+	require.NoError(t, err)
+	_, err = asA.Get(ctx, alice, keyA)
+	require.NoError(t, err)
+	_, err = asA.Unlock(ctx, alice, keyA, lock.LockID, false)
+	require.NoError(t, err)
+
+	// Role A cannot read, write or lock project B.
+	_, err = asA.Get(ctx, alice, keyB)
+	require.ErrorIs(t, err, store.ErrForbidden)
+	_, err = asA.Put(ctx, alice, keyB, "", body(1), nil)
+	require.ErrorIs(t, err, store.ErrForbidden)
+	_, err = asA.Lock(ctx, alice, httpLock(keyB, "A2"))
+	require.ErrorIs(t, err, store.ErrForbidden)
+
+	// History is append-only for project roles.
+	cfg := connConfig("")
+	cfg.Role = roleA
+	raw, err := sfconn.Open(ctx, cfg)
+	require.NoError(t, err)
+	defer raw.Close()
+	schemaA := dbName + "." + snowflake.ProjectSchema(projA)
+	for _, stmt := range []string{
+		"DELETE FROM " + schemaA + ".STATE_VERSIONS",
+		"UPDATE " + schemaA + ".STATE_VERSIONS SET SERIAL = 0",
+		"DELETE FROM " + schemaA + ".AUDIT_LOG",
+		"UPDATE " + schemaA + ".AUDIT_LOG SET RESULT = 'X'",
+	} {
+		_, err := raw.ExecContext(ctx, stmt)
+		require.Error(t, err, stmt)
+	}
+}
