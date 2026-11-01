@@ -827,3 +827,81 @@ func TestSetupActionInstaller(t *testing.T) {
 	_, _, err = install("false")
 	require.NoError(t, err, "verify-checksum=false skips the check")
 }
+
+func TestChangedCodeScript(t *testing.T) {
+	script := filepath.Join(repoRoot, ".github/scripts/changed-code.sh")
+	dir := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+		return strings.TrimSpace(string(out))
+	}
+	commit := func(files ...string) string {
+		t.Helper()
+		for _, f := range files {
+			require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(dir, f)), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, f), []byte(f+time.Now().String()), 0o600))
+		}
+		git("add", ".")
+		git("commit", "-q", "--allow-empty", "-m", "c")
+		return git("rev-parse", "HEAD")
+	}
+	check := func(want string, base, head string) {
+		t.Helper()
+		cmd := exec.Command(script, base, head)
+		cmd.Dir = dir
+		out, err := cmd.Output()
+		require.NoError(t, err)
+		assert.Equal(t, "code="+want+"\n", string(out), "%s..%s", base, head)
+	}
+
+	git("init", "-q")
+	base := commit("main.go")
+
+	docs := commit("docs/a.md", "docs/statey.jpg", "README.md", "LICENSE", "NOTICE", "sub/dir/notes.md")
+	check("false", base, docs)
+
+	mixed := commit("README.md", "main.go")
+	check("true", docs, mixed)
+
+	workflow := commit(".github/workflows/ci.yml")
+	check("true", mixed, workflow)
+
+	lookalike := commit("docsfile.txt")
+	check("true", workflow, lookalike)
+
+	empty := commit()
+	check("true", lookalike, empty) // nothing changed, so do not claim it is safe
+
+	// Anything unknown runs everything.
+	check("true", "", empty)
+	check("true", "0000000000000000000000000000000000000000", empty)
+	check("true", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", empty)
+}
+
+func TestCIGateScript(t *testing.T) {
+	script := filepath.Join(repoRoot, ".github/scripts/ci-gate.sh")
+	for _, tt := range []struct {
+		args []string
+		pass bool
+	}{
+		{[]string{"success", "success", "skipped", "skipped"}, true},
+		{[]string{"success", "skipped", "skipped"}, true},
+		{[]string{"success", "success", "failure"}, false},
+		{[]string{"success", "cancelled", "success"}, false},
+		{[]string{"failure", "skipped", "skipped"}, false},
+		{[]string{"skipped", "skipped"}, false},
+		{[]string{"cancelled", "success"}, false},
+		{[]string{}, false},
+	} {
+		err := exec.Command(script, tt.args...).Run()
+		if tt.pass {
+			assert.NoError(t, err, "%v", tt.args)
+		} else {
+			assert.Error(t, err, "%v", tt.args)
+		}
+	}
+}

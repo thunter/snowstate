@@ -322,6 +322,12 @@ needs no emulation.
 
 **D52. `integration` skips rather than passes without credentials.** It used to show green with every step skipped.
 
+**D53. Docs-only changes skip the long CI jobs, and `ci-ok` and `action-ok` are the required checks.** A workflow-level path
+filter leaves required checks pending forever, and a skipped matrix job reports as `e2e`, not `e2e (ubuntu-latest)`. So every
+workflow starts, `changed-code.sh` decides, jobs skip themselves, and a gate job that always runs reports one result. The
+gate fails on anything but `success` or `skipped`, and if the `changes` job itself did not succeed. The script is local
+rather than `dorny/paths-filter`, so it can be tested and needs no pinning, and it runs everything when unsure.
+
 ### Open: not verified in this build
 
 - **`github-wif`, the real Actions workflows and CI itself have not run.** They need a push to GitHub, an OIDC service

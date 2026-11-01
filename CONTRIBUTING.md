@@ -19,7 +19,8 @@ without them. Please run it for anything that changes Snowflake behaviour.
 
 - Branch from `main`. Direct pushes to `main` are blocked.
 - Keep each pull request to one change, with a test for any new or fixed behaviour.
-- `make lint test e2e` must pass.
+- `make lint test e2e` must pass. CI skips its long jobs when a pull request only changes `docs/`, Markdown files,
+  `LICENSE` or `NOTICE`.
 - Update `CHANGELOG.md` and any affected docs.
 
 ## Project rules
