@@ -2,7 +2,7 @@ name: Set up snowstate
 description: Downloads a snowstate release binary, verifies it and adds it to PATH.
 inputs:
   version:
-    description: Release to install, such as v1.2.3. Defaults to the ref this action was used at.
+    description: Release to install, such as v1.2.3, or v1 for the newest v1 release. Defaults to the ref this action was used at.
     required: false
     default: ""
   verify-checksum:
@@ -28,12 +28,9 @@ runs:
       env:
         INPUT_VERSION: ${{ inputs.version }}
         ACTION_REF: ${{ github.action_ref }}
+        REPOSITORY: ${{ inputs.repository }}
       run: |
-        version="${INPUT_VERSION:-$ACTION_REF}"
-        if [ -z "$version" ]; then
-          echo "::error::no version: set the version input or pin the action to a tag"
-          exit 1
-        fi
+        version="$("$GITHUB_ACTION_PATH/resolve-version.sh" "$REPOSITORY" "${INPUT_VERSION:-$ACTION_REF}")"
         case "$RUNNER_OS" in
           Linux) os=linux; ext= ;;
           macOS) os=darwin; ext= ;;

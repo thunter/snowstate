@@ -328,6 +328,11 @@ workflow starts, `changed-code.sh` decides, jobs skip themselves, and a gate job
 gate fails on anything but `success` or `skipped`, and if the `changes` job itself did not succeed. The script is local
 rather than `dorny/paths-filter`, so it can be tested and needs no pinning, and it runs everything when unsure.
 
+**D54. `action/setup` resolves major tags.** A release only exists under its full version, so `@v1` would have asked for
+`/releases/download/v1/` and got a 404. A major tag now resolves to the newest stable release using `git ls-remote`, which
+needs no token. The cache key uses the resolved version, so `@v1` picks up new releases. Anything that is not a version,
+such as `@main`, fails with a clear message. The action's CI used to pass an explicit version, which is why this was missed.
+
 ### Open: not verified in this build
 
 - **`github-wif`, the real Actions workflows and CI itself have not run.** They need a push to GitHub, an OIDC service
