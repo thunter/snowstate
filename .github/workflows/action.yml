@@ -15,7 +15,20 @@ env:
   FIXTURE: test/e2e/fixtures/action
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: .github/scripts/changed-code.sh "$BASE" "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
   action-build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,3 +92,14 @@ jobs:
       - name: Check the audit detail
         run: |
           jq -e --arg run "$GITHUB_RUN_ID" '[.Audit[] | select(.Action == "PUT" and .Detail.run_id == $run)] | length > 0' store.json
+  action-ok:
+    # The required check. It always runs, so it also reports docs-only changes.
+    if: always()
+    needs: [changes, action-build, plan, apply]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: .github/scripts/ci-gate.sh "$CHANGES" $RESULTS

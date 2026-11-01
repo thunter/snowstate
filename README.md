@@ -1,22 +1,80 @@
-# snowstate
+<p align="center">
+  <img src="docs/snowstate-statey.jpg" alt="Statey the snowfox placing a Terraform state cube into a Snowflake chest, under the snowstate logo" width="360">
+</p>
 
-A Terraform and OpenTofu state backend that stores state in Snowflake.
+<h1 align="center">snowstate</h1>
 
-Neither tool supports third-party backends in a stable release, but both ship a generic `http` backend. snowstate is
-that server: it keeps state, full version history, locks and an audit trail in Snowflake tables, and works with stock
-Terraform 1.5+ and OpenTofu 1.6+.
+<p align="center">
+  <strong>Keep your Terraform and OpenTofu state in Snowflake, with real locking and full history.</strong>
+</p>
 
-- **Correct locking.** A hybrid table's enforced primary key decides every race.
-- **Every write is an immutable version.** List, download and restore any of them.
-- **Byte-exact storage**, checked against MD5 on every read.
-- **Two deployment modes** from one binary: a shared server, or `snowstate exec`, a sidecar with no shared
-  infrastructure.
-- **Query your infrastructure with SQL** through the `STATE_RESOURCES` view, which omits attributes because they can
-  hold secrets.
+<p align="center">
+  <a href="https://github.com/thunter/snowstate/actions/workflows/ci.yml"><img src="https://github.com/thunter/snowstate/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache-2.0 license"></a>
+  <a href="go.mod"><img src="https://img.shields.io/github/go-mod/go-version/thunter/snowstate" alt="Go version"></a>
+</p>
+
+Terraform needs somewhere safe to keep its state, and if your organisation already runs on Snowflake, that usually means
+standing up a separate bucket, a lock table and another set of credentials just for this one job.
+
+**snowstate lets you use the platform you already have.** It stores state, version history, locks and an audit trail in
+ordinary Snowflake tables, secured by the roles and grants you already manage. Terraform and OpenTofu have no Snowflake
+backend, and neither supports third-party backend plugins in a stable release, so snowstate speaks their built-in `http`
+backend. That means no fork, no plugin and no wrapper around your modules.
+
+You don't even need to host anything: `snowstate exec` runs a temporary local backend for the length of a single command.
+
+## Why use snowstate?
+
+- **One platform for your data and your state.** Use Snowflake's access control, encryption and retention, rather than
+  adding another cloud service to secure and audit.
+- **Nothing to run.** Sidecar mode needs no server. In GitHub Actions it can log in with workload identity, so there is no
+  stored Snowflake secret.
+- **Mistakes are recoverable.** Every write is kept as an immutable version, so you can go back to the state from before
+  things went wrong.
+- **Your infrastructure becomes queryable.** See what Terraform manages across every state with plain SQL.
+- **It's just Snowflake.** Everything lives in tables you can inspect, back up and audit yourself.
+
+## Features
+
+| | |
+|---|---|
+| 🔒 **Race-free locking** | A hybrid table's enforced primary key decides every lock. In testing, 25 clients raced for one lock over 10 rounds, with exactly one winner each time. |
+| 🕰️ **Full version history** | List, download and restore any version. A restore creates a new version, so history is never rewritten. |
+| ✅ **Byte-exact storage** | State is stored exactly as received and checked against its MD5 on every read. |
+| 🧩 **Works with stock tools** | Tested on Terraform 1.5 and 1.17 and OpenTofu 1.13, using only the built-in `http` backend. |
+| 🚀 **Two ways to run** | A short-lived sidecar with `snowstate exec`, or a shared server with `snowstate serve`, from a single binary. |
+| 🔍 **SQL inventory** | The `STATE_RESOURCES` view lists managed resources, and leaves out attributes because they can hold secrets. |
+| 🧾 **Audit trail** | Every change is recorded in the same transaction as the change itself, and GitHub Actions runs are linked to their run URL. |
+| 🔑 **Flexible auth** | Connect to Snowflake with key pair, PAT, OAuth, browser SSO or workload identity. Clients use scoped API tokens or mTLS. |
+| 🐙 **Built for CI** | A GitHub Action, step summaries, and saved plans that work across jobs. |
+| 🩺 **Operator tooling** | `migrate`, `doctor`, retention and cleanup with `gc`, Prometheus metrics and structured logs. |
+
+## How it works
+
+```mermaid
+flowchart LR
+    TF["terraform / tofu<br/>http backend"] -->|"GET, POST, LOCK, UNLOCK"| SS["snowstate<br/>sidecar or server"]
+    SS -->|"SQL over TLS"| SF[("Snowflake<br/>state, versions, locks, audit")]
+```
+
+Terraform talks HTTP to snowstate, and snowstate reads and writes Snowflake. Your Terraform code doesn't change, apart from
+the backend block.
+
+## Project status
+
+snowstate is **pre-1.0**, so expect rough edges, and try it somewhere safe before trusting it with production state.
+
+- Hybrid tables are required for production locking. They are generally available on AWS and Azure, and in preview on GCP.
+- There are no published releases yet, so for now you build from source.
+- `schema_per_project` tenancy is not ready: it has a known login failure, and its role isolation has not been verified.
+
+[`docs/decisions.md`](docs/decisions.md) records what has been verified, and what has not.
 
 ## Quick start: sidecar
 
-The sidecar runs a loopback server for the length of one command, using your own Snowflake credentials.
+The sidecar runs a local server for the length of one command, using your own Snowflake credentials.
+[The tutorial](docs/tutorial-snowflake-database.md) walks through this in full, from an empty account.
 
 **1. Build.** This needs Go 1.27.
 
@@ -89,16 +147,19 @@ the default workspace is the literal segment `default`: `platform/network/defaul
 
 | | |
 |---|---|
-| [`docs/tutorial-snowflake-database.md`](docs/tutorial-snowflake-database.md) | Tutorial: create a database with the Snowflake provider |
-| [`docs/cli-reference.md`](docs/cli-reference.md) | Every command and flag, with examples |
-| [`docs/operator-guide.md`](docs/operator-guide.md) | Bootstrap, deployment, TLS, tokens, retention, cost, upgrades |
-| [`docs/github-actions.md`](docs/github-actions.md) | Workload identity, the setup action, plan and apply across jobs |
-| [`docs/runbook.md`](docs/runbook.md) | Stuck locks, outages, bad states, key rotation |
-| [`docs/decisions.md`](docs/decisions.md) | Every verified behaviour and every deviation from the spec |
-| [`snowstate.example.yaml`](snowstate.example.yaml) | Every configuration key |
-| [`examples/`](examples) | Module and CI examples |
+| [Tutorial](docs/tutorial-snowflake-database.md) | Create a database with the Snowflake provider, with state in Snowflake |
+| [CLI reference](docs/cli-reference.md) | Every command and flag, with examples |
+| [Operator guide](docs/operator-guide.md) | Bootstrap, deployment, TLS, tokens, retention, cost, upgrades |
+| [GitHub Actions](docs/github-actions.md) | Workload identity, the setup action, plan and apply across jobs |
+| [Runbook](docs/runbook.md) | Stuck locks, outages, bad states, key rotation |
+| [Decisions](docs/decisions.md) | Every verified behaviour and every deviation from the spec |
+| [Example config](snowstate.example.yaml) | Every configuration key |
+| [Examples](examples) | Module and CI examples |
 
-## Development
+## Contributing
+
+Contributions are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) to get started, and [`SECURITY.md`](SECURITY.md) to
+report a vulnerability privately.
 
 ```bash
 make lint test     # unit tests, no network
@@ -106,4 +167,8 @@ make e2e           # real Terraform and OpenTofu against a memory store
 make integration   # real Snowflake; needs SNOWSTATE_IT_*, skipped otherwise
 ```
 
-Apache-2.0.
+## License
+
+Apache-2.0. See [`LICENSE`](LICENSE).
+
+*Statey the snowfox keeps your state safe.* 🦊❄️

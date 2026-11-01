@@ -10,4 +10,5 @@
 - Dockerfile, Kubernetes example, multi-arch release build, and operator documentation.
 - GitHub Actions: workload identity federation, CI context in audit rows, step summaries, `action/setup`.
 - Release tags are validated as semver, prereleases are marked, and the image is multi-arch.
+- CI skips long jobs for documentation-only changes.
 - Structured logs, Prometheus metrics, health and readiness endpoints.
