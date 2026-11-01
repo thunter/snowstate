@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.0 - 2026-11-01
+
 - HTTP state backend protocol over a frontend-neutral core, with an in-memory store for tests.
 - Token, loopback-secret and mTLS authentication, with scope-based authorization.
 - `snowstate exec` sidecar mode.
