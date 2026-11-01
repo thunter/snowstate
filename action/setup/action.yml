@@ -50,7 +50,7 @@ runs:
         echo "binary=snowstate${ext}" >> "$GITHUB_OUTPUT"
         echo "dir=$RUNNER_TOOL_CACHE/snowstate/$version/$arch" >> "$GITHUB_OUTPUT"
     - id: cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ${{ steps.resolve.outputs.dir }}
         key: snowstate-${{ steps.resolve.outputs.version }}-${{ steps.resolve.outputs.asset }}

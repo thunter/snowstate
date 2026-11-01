@@ -12,7 +12,7 @@ jobs:
     outputs:
       code: ${{ steps.diff.outputs.code }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
       - id: diff
         env:
@@ -23,17 +23,17 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with: { go-version-file: go.mod }
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
   test:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with: { go-version-file: go.mod }
       - run: make test
   vuln:
@@ -41,8 +41,8 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with: { go-version-file: go.mod }
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - run: make vuln
@@ -54,10 +54,10 @@ jobs:
       matrix: { os: [ubuntu-latest, macos-latest] }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with: { go-version-file: go.mod }
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .tools
           key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/tools.sh') }}
@@ -67,24 +67,24 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with: { go-version-file: go.mod }
       - run: make release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: binaries, path: dist/, retention-days: 3 }
   image:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: make image VERSION=ci
       - name: Runs as non-root on a read-only filesystem
         run: |
           test "$(docker inspect -f '{{.Config.User}}' snowstate:ci)" = "65532:65532"
           docker run --rm --read-only snowstate:ci version
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Builds for every image platform
         run: make image-multiarch VERSION=ci
   ci-ok:
@@ -93,7 +93,7 @@ jobs:
     needs: [changes, lint, test, vuln, e2e, build, image]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - env:
           CHANGES: ${{ needs.changes.result }}
           RESULTS: ${{ join(needs.*.result, ' ') }}
@@ -114,8 +114,8 @@ jobs:
       SNOWSTATE_IT_ROLE_A: ${{ vars.SNOWFLAKE_ROLE_A }}
       SNOWSTATE_IT_ROLE_B: ${{ vars.SNOWFLAKE_ROLE_B }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with: { go-version-file: go.mod }
       - run: printf '%s' "$KEY" > .it-key.p8 && chmod 600 .it-key.p8
         env: { KEY: "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" }
@@ -134,8 +134,8 @@ jobs:
       SNOWSTATE_IT_DATABASE: ${{ vars.SNOWFLAKE_DATABASE }}
       SNOWSTATE_IT_AUTH: workload_identity
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with: { go-version-file: go.mod }
       - run: make tools
       - run: go test -count=1 -timeout 30m -tags integration -run 'TestE2EOverSnowflake|TestSplitPlanApplyOverSnowflake' ./test/integration/...
