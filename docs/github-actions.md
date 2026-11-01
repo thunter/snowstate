@@ -66,12 +66,15 @@ GitHub-hosted runners have no fixed IPs. If the account uses a network policy, c
 ## The setup action
 
 ```yaml
-- uses: thunter/snowstate/action/setup@v1
+- uses: thunter/snowstate/action/setup@v0
 ```
+
+`@v0` installs the newest stable `v0` release, so each run can pick up a newer one. To stay on one version, pin it:
+`@v0.1.0`. Prereleases are only installed by their full version.
 
 | Input | Default | |
 |---|---|---|
-| `version` | The action's own tag | A release such as `v1.2.3` |
+| `version` | The action's own tag | A release such as `v1.2.3`, or `v1` for the newest `v1` release |
 | `verify-checksum` | `true` | Verify against `checksums.txt` |
 
 It installs the right binary for the runner (linux, darwin or windows; amd64 or arm64), adds it to `PATH`, caches it by

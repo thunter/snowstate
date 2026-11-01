@@ -48,7 +48,7 @@ jobs:
       - uses: hashicorp/setup-terraform@v4
         with: { terraform_wrapper: false }
       - uses: ./action/setup
-        with: { version: ci }
+        with: { version: v0.0.0-ci }
         env: { BASE_URL: "file://${{ github.workspace }}/dist" }
       - run: snowstate exec --store=memory -- terraform -chdir="$FIXTURE" init -input=false
       - run: snowstate exec --store=memory -- terraform -chdir="$FIXTURE" plan -input=false -out=tfplan
@@ -79,7 +79,7 @@ jobs:
       - uses: hashicorp/setup-terraform@v4
         with: { terraform_wrapper: false }
       - uses: ./action/setup
-        with: { version: ci }
+        with: { version: v0.0.0-ci }
         env: { BASE_URL: "file://${{ github.workspace }}/dist" }
       - run: snowstate exec --store=memory -- terraform -chdir="$FIXTURE" init -input=false
       # $GITHUB_STEP_SUMMARY is a different file in each step, so the summary has

@@ -11,4 +11,6 @@
 - GitHub Actions: workload identity federation, CI context in audit rows, step summaries, `action/setup`.
 - Release tags are validated as semver, prereleases are marked, and the image is multi-arch.
 - CI skips long jobs for documentation-only changes.
+- `action/setup` works with major tags such as `@v0`.
+- Stable releases need a matching `CHANGELOG.md` section.
 - Structured logs, Prometheus metrics, health and readiness endpoints.

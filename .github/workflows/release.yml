@@ -17,6 +17,9 @@ jobs:
         with: { go-version-file: go.mod }
       - id: version
         run: .github/scripts/release-version.sh "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+      - name: Check the changelog has this release
+        if: steps.version.outputs.prerelease != 'true'
+        run: .github/scripts/check-changelog.sh "$GITHUB_REF_NAME"
       - run: make release VERSION="$GITHUB_REF_NAME"
       - uses: sigstore/cosign-installer@v3
       - name: Sign the checksums
