@@ -20,7 +20,7 @@ jobs:
     outputs:
       code: ${{ steps.diff.outputs.code }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
       - id: diff
         env:
@@ -31,33 +31,33 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with: { go-version-file: go.mod }
       - run: make release VERSION=ci
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: dist, path: dist/, retention-days: 1 }
 
   plan:
     needs: action-build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with: { name: dist, path: dist }
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with: { terraform_wrapper: false }
       - uses: ./action/setup
         with: { version: ci }
         env: { BASE_URL: "file://${{ github.workspace }}/dist" }
       - run: snowstate exec --store=memory -- terraform -chdir="$FIXTURE" init -input=false
       - run: snowstate exec --store=memory -- terraform -chdir="$FIXTURE" plan -input=false -out=tfplan
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tfplan
           path: ${{ env.FIXTURE }}/tfplan
           retention-days: 1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: store
           path: store.json
@@ -68,15 +68,15 @@ jobs:
     needs: plan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with: { name: dist, path: dist }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { name: tfplan, path: "${{ env.FIXTURE }}" }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true # the plan job writes no state, so there may be none
         with: { name: store }
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with: { terraform_wrapper: false }
       - uses: ./action/setup
         with: { version: ci }
@@ -98,7 +98,7 @@ jobs:
     needs: [changes, action-build, plan, apply]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - env:
           CHANGES: ${{ needs.changes.result }}
           RESULTS: ${{ join(needs.*.result, ' ') }}
