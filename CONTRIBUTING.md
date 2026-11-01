@@ -31,15 +31,20 @@ without them. Please run it for anything that changes Snowflake behaviour.
 
 ## Releases
 
-Versions follow [semantic versioning](https://semver.org). A maintainer tags a release, and `.github/workflows/release.yml`
-does the rest:
+Versions follow [semantic versioning](https://semver.org). For a stable release, a maintainer first renames the
+`## Unreleased` section of `CHANGELOG.md` to `## 0.1.0 - <date>` in a pull request, adds a new empty `## Unreleased` above
+it, and merges that. Then they tag the merged commit, and `.github/workflows/release.yml` does the rest:
 
 ```bash
+git switch main && git pull
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-A tag with a suffix, such as `v0.2.0-rc.1`, is published as a prerelease and does not move the major tag.
+The release fails before anything is published if the changelog has no section for that version.
+
+A tag with a suffix, such as `v0.2.0-rc.1`, skips that check. It is published as a prerelease and does not move the major
+tag.
 
 ## Reporting security problems
 

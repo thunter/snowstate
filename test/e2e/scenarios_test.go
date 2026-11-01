@@ -905,3 +905,75 @@ func TestCIGateScript(t *testing.T) {
 		}
 	}
 }
+
+func TestSetupActionResolvesVersions(t *testing.T) {
+	script := filepath.Join(repoRoot, "action/setup/resolve-version.sh")
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+	}
+	git("init", "-q")
+	git("commit", "-q", "--allow-empty", "-m", "c")
+	for _, tag := range []string{
+		"v0", "v1", "v0.1.0", "v0.2.0", "v0.10.0", "v0.11.0-rc.1", "v1.0.0-rc.1", "v3.0.0-rc.1", "v10.0.0", "v0.x", "v0.1.2.3",
+	} {
+		git("tag", tag)
+	}
+	resolve := func(version string) (string, string, error) {
+		cmd := exec.Command(script, "x/y", version)
+		cmd.Env = append(baseEnv(), "REMOTE_URL="+dir)
+		var stdout, stderr strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
+		return strings.TrimSpace(stdout.String()), stderr.String(), err
+	}
+
+	for requested, want := range map[string]string{
+		"v0":           "v0.10.0", // numeric order, and prereleases do not count
+		"v10":          "v10.0.0",
+		"v0.1.0":       "v0.1.0", // a full version is used as it is
+		"v0.11.0-rc.1": "v0.11.0-rc.1",
+		"v0.0.0-ci":    "v0.0.0-ci",
+	} {
+		got, stderr, err := resolve(requested)
+		require.NoError(t, err, stderr)
+		assert.Equal(t, want, got, requested)
+	}
+
+	for requested, want := range map[string]string{
+		"v1":   "no stable v1 release", // only a prerelease exists
+		"v2":   "no stable v2 release",
+		"v3":   "no stable v3 release",
+		"main": "pin the action",
+		"":     "pin the action",
+		"abc1": "pin the action",
+		"v1.2": "pin the action",
+	} {
+		got, stderr, err := resolve(requested)
+		require.Error(t, err, requested)
+		assert.Empty(t, got, requested)
+		assert.Contains(t, stderr, want, requested)
+	}
+}
+
+func TestCheckChangelogScript(t *testing.T) {
+	script := filepath.Join(repoRoot, ".github/scripts/check-changelog.sh")
+	file := filepath.Join(t.TempDir(), "CHANGELOG.md")
+	require.NoError(t, os.WriteFile(file, []byte("# Changelog\n\n## Unreleased\n\n## 0.2.0 - 2026-11-02\n\n- See 0.3.0 later.\n\n## 0.1.0\n"), 0o600))
+	for tag, pass := range map[string]bool{
+		"v0.2.0": true, "v0.1.0": true, // with and without a date
+		"v0.3.0": false, "v0.20.0": false, "v0x2.0": false, "v0.2": false,
+	} {
+		out, err := exec.Command(script, tag, file).CombinedOutput()
+		if pass {
+			assert.NoError(t, err, "%s: %s", tag, out)
+		} else {
+			require.Error(t, err, tag)
+			assert.Contains(t, string(out), "has no", tag)
+		}
+	}
+}
