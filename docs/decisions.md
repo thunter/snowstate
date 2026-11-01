@@ -115,7 +115,7 @@ command is printed.
 
 ## Snowflake verification (M3)
 
-Verified on account `IK96809`, region `AWS_AP_SOUTHEAST_6`, Snowflake 10.39.101. First run on gosnowflake v1.19.1, and re-run in full on v2.3.0 (D36).
+Verified on a real account in region `AWS_AP_SOUTHEAST_6`, Snowflake 10.39.101. First run on gosnowflake v1.19.1, and re-run in full on v2.3.0 (D36).
 
 | VERIFY | Outcome |
 |---|---|
