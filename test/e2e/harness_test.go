@@ -24,9 +24,9 @@ import (
 )
 
 var (
-	repoRoot string
-	binary   string
-	cacheDir string
+	repoRoot  string
+	binary    string
+	cacheRoot string
 )
 
 type client struct {
@@ -62,10 +62,7 @@ func setup(m *testing.M) (int, error) {
 	if out, err := build.CombinedOutput(); err != nil {
 		return 0, fmt.Errorf("build: %w\n%s", err, out)
 	}
-	cacheDir = filepath.Join(repoRoot, ".tools", "plugin-cache")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return 0, err
-	}
+	cacheRoot = filepath.Join(repoRoot, ".tools", "plugin-cache")
 	for _, c := range []client{
 		{"terraform-1.5.7", ".tools/terraform-1.5.7/terraform"},
 		{"terraform-1.17.1", ".tools/terraform-1.17.1/terraform"},
@@ -219,8 +216,12 @@ func newWorkdir(t *testing.T, c client, tf string) *workdir {
 	dir := t.TempDir()
 	w := &workdir{t: t, c: c, dir: dir}
 	w.write(tf)
+	// Each client gets its own cache. Clients run in parallel, and on a cold
+	// cache a shared directory lets one read a package another is still writing.
+	cache := filepath.Join(cacheRoot, c.name)
+	require.NoError(t, os.MkdirAll(cache, 0o755))
 	w.env = append(baseEnv(), "TF_IN_AUTOMATION=1", "TF_INPUT=0", "CHECKPOINT_DISABLE=1",
-		"TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE=1", "TF_PLUGIN_CACHE_DIR="+cacheDir)
+		"TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE=1", "TF_PLUGIN_CACHE_DIR="+cache)
 	return w
 }
 

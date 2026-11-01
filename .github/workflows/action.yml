@@ -15,7 +15,7 @@ env:
   FIXTURE: test/e2e/fixtures/action
 
 jobs:
-  build:
+  action-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +26,7 @@ jobs:
         with: { name: dist, path: dist/, retention-days: 1 }
 
   plan:
-    needs: build
+    needs: action-build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

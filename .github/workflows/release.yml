@@ -15,24 +15,36 @@ jobs:
         with: { fetch-depth: 0 }
       - uses: actions/setup-go@v5
         with: { go-version-file: go.mod }
-      - run: make release VERSION=${{ github.ref_name }}
+      - id: version
+        run: .github/scripts/release-version.sh "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+      - run: make release VERSION="$GITHUB_REF_NAME"
       - uses: sigstore/cosign-installer@v3
       - name: Sign the checksums
         run: cosign sign-blob --yes --bundle dist/checksums.txt.sigstore.json dist/checksums.txt
       - name: Publish the release
-        env: { GH_TOKEN: "${{ github.token }}" }
-        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          flags=(--generate-notes)
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); else flags+=(--latest); fi
+          gh release create "$GITHUB_REF_NAME" dist/* "${flags[@]}"
+      - uses: docker/setup-buildx-action@v3
       - name: Publish the image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          MAJOR: ${{ steps.version.outputs.major }}
         run: |
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          make image VERSION="$GITHUB_REF_NAME"
-          docker tag "snowstate:$GITHUB_REF_NAME" "$image:$GITHUB_REF_NAME"
-          docker tag "snowstate:$GITHUB_REF_NAME" "$image:v1"
-          docker push "$image:$GITHUB_REF_NAME"
-          docker push "$image:v1"
-        env: { GH_TOKEN: "${{ github.token }}" }
-      - name: Move the v1 tag for action/setup
+          args="--push --tag $image:$GITHUB_REF_NAME"
+          if [ "$PRERELEASE" != "true" ]; then args="$args --tag $image:$MAJOR"; fi
+          make image-multiarch VERSION="$GITHUB_REF_NAME" IMAGE_ARGS="$args"
+      - name: Move the major tag for action/setup
+        if: steps.version.outputs.prerelease != 'true'
+        env:
+          MAJOR: ${{ steps.version.outputs.major }}
         run: |
-          git tag -f v1
-          git push -f origin v1
+          git tag -f "$MAJOR"
+          git push -f origin "refs/tags/$MAJOR"
