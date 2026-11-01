@@ -333,6 +333,10 @@ rather than `dorny/paths-filter`, so it can be tested and needs no pinning, and 
 needs no token. The cache key uses the resolved version, so `@v1` picks up new releases. Anything that is not a version,
 such as `@main`, fails with a clear message. The action's CI used to pass an explicit version, which is why this was missed.
 
+**D55. A stable release needs a changelog section.** `check-changelog.sh` runs before anything is built or published, so a
+forgotten changelog fails the release cleanly. Prereleases skip it, because their contents may still change. A tag is
+immutable under the ruleset, so a failed tag means a new version number, not a retry of the same one.
+
 ### Open: not verified in this build
 
 - **`github-wif`, the real Actions workflows and CI itself have not run.** They need a push to GitHub, an OIDC service

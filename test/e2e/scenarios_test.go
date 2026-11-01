@@ -959,3 +959,21 @@ func TestSetupActionResolvesVersions(t *testing.T) {
 		assert.Contains(t, stderr, want, requested)
 	}
 }
+
+func TestCheckChangelogScript(t *testing.T) {
+	script := filepath.Join(repoRoot, ".github/scripts/check-changelog.sh")
+	file := filepath.Join(t.TempDir(), "CHANGELOG.md")
+	require.NoError(t, os.WriteFile(file, []byte("# Changelog\n\n## Unreleased\n\n## 0.2.0 - 2026-11-02\n\n- See 0.3.0 later.\n\n## 0.1.0\n"), 0o600))
+	for tag, pass := range map[string]bool{
+		"v0.2.0": true, "v0.1.0": true, // with and without a date
+		"v0.3.0": false, "v0.20.0": false, "v0x2.0": false, "v0.2": false,
+	} {
+		out, err := exec.Command(script, tag, file).CombinedOutput()
+		if pass {
+			assert.NoError(t, err, "%s: %s", tag, out)
+		} else {
+			require.Error(t, err, tag)
+			assert.Contains(t, string(out), "has no", tag)
+		}
+	}
+}
