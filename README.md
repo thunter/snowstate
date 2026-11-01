@@ -71,22 +71,48 @@ the backend block.
 snowstate is **alpha and pre-1.0**, so expect rough edges, and try it somewhere safe before trusting it with production state.
 
 - Hybrid tables are required for production locking. They are generally available on AWS and Azure, and in preview on GCP.
-- There are no published releases yet, so for now you build from source.
 - `schema_per_project` tenancy is not ready: it has a known login failure, and its role isolation has not been verified.
 
 [`docs/decisions.md`](docs/decisions.md) records what has been verified, and what has not.
+
+## Install
+
+Download a binary from [the latest release](https://github.com/thunter/snowstate/releases/latest) and check it. Binaries
+are available for Linux, macOS and Windows, on amd64 and arm64.
+
+```bash
+asset=snowstate_linux_amd64   # or snowstate_linux_arm64, snowstate_darwin_amd64, snowstate_darwin_arm64
+base=https://github.com/thunter/snowstate/releases/latest/download
+curl -fsSLO "$base/$asset"
+curl -fsSLO "$base/checksums.txt"
+sha256sum --check --ignore-missing checksums.txt   # on macOS: shasum -a 256 --check --ignore-missing checksums.txt
+chmod +x "$asset"
+sudo mv "$asset" /usr/local/bin/snowstate
+```
+
+There is also a container image for `snowstate serve`, and a GitHub Action:
+
+```bash
+docker pull ghcr.io/thunter/snowstate:v0
+```
+
+```yaml
+- uses: thunter/snowstate/action/setup@v0
+```
+
+To build from source, you need Go 1.27:
+
+```bash
+make build     # writes bin/snowstate
+export PATH="$PWD/bin:$PATH"
+```
 
 ## Quick start: sidecar
 
 The sidecar runs a local server for the length of one command, using your own Snowflake credentials.
 [The tutorial](docs/tutorial-snowflake-database.md) walks through this in full, from an empty account.
 
-**1. Build.** This needs Go 1.27.
-
-```bash
-make build     # writes bin/snowstate
-export PATH="$PWD/bin:$PATH"
-```
+**1. [Install snowstate](#install).**
 
 **2. Configure.** You need a role that can create objects in a schema. `deploy/snowflake/bootstrap.sql` sets up a
 production footprint.
