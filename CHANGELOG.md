@@ -9,4 +9,5 @@
 - `migrate`, `doctor`, token, state, lock, project and gc commands, and the admin HTTP API.
 - Dockerfile, Kubernetes example, multi-arch release build, and operator documentation.
 - GitHub Actions: workload identity federation, CI context in audit rows, step summaries, `action/setup`.
+- Release tags are validated as semver, prereleases are marked, and the image is multi-arch.
 - Structured logs, Prometheus metrics, health and readiness endpoints.

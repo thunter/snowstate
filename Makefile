@@ -9,8 +9,11 @@ LDFLAGS := -s -w \
 export CGO_ENABLED ?= 0
 
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
+IMAGE_PLATFORMS := linux/amd64,linux/arm64
+# Extra flags for image-multiarch, such as --push and --tag options.
+IMAGE_ARGS ?=
 
-.PHONY: all build release image lint test cover e2e integration vuln tools clean
+.PHONY: all build release image image-multiarch lint test cover e2e integration vuln tools clean
 
 all: lint test build
 
@@ -30,6 +33,11 @@ release:
 
 image:
 	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) -t snowstate:$(VERSION) .
+
+# Needs docker buildx. Without IMAGE_ARGS it only checks that each platform builds.
+image-multiarch:
+	docker buildx build -f deploy/docker/Dockerfile --platform $(IMAGE_PLATFORMS) \
+		--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) $(IMAGE_ARGS) .
 
 lint:
 	golangci-lint run ./...

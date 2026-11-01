@@ -115,7 +115,7 @@ command is printed.
 
 ## Snowflake verification (M3)
 
-Verified on account `IK96809`, region `AWS_AP_SOUTHEAST_6`, Snowflake 10.39.101. First run on gosnowflake v1.19.1, and re-run in full on v2.3.0 (D36).
+Verified on a real account in region `AWS_AP_SOUTHEAST_6`, Snowflake 10.39.101. First run on gosnowflake v1.19.1, and re-run in full on v2.3.0 (D36).
 
 | VERIFY | Outcome |
 |---|---|
@@ -310,11 +310,24 @@ sorts randomly within a millisecond, and repeated test runs caught a listing wit
 uses `rand_a` as a sequence (RFC 9562 §6.2). Across replicas, order follows the clock, which is safe in practice because
 writes to one state are serialised by its lock and are seconds apart.
 
+**D49. e2e clients use separate plugin caches.** Clients run in parallel, and a shared `TF_PLUGIN_CACHE_DIR` let one read a
+provider package another was still writing, which failed every time on a cold cache. CI's macOS job hit it first.
+
+**D50. Release tags are checked, and only stable tags move the major tag.** `.github/scripts/release-version.sh` refuses
+anything that is not semver. `v0.1.0` moves `v0`, `v1.2.3` moves `v1`, and `v1.0.0-rc.1` moves nothing and is published as a
+prerelease. The spec only described `v1`.
+
+**D51. The release image covers linux/amd64 and linux/arm64.** The Dockerfile cross-compiles in its build stage, so arm64
+needs no emulation.
+
+**D52. `integration` skips rather than passes without credentials.** It used to show green with every step skipped.
+
 ### Open: not verified in this build
 
 - **`github-wif`, the real Actions workflows and CI itself have not run.** They need a push to GitHub, an OIDC service
   user and the `integration` environment. The workflow files were only parsed as YAML, not run. Everything they exercise was tested
   locally with the runner's variables set (scenario 10), and the OIDC fetch against a local HTTP server, but a real
   Snowflake WIF login has not happened.
-- **The container image** has not been built (D38).
+- **The multi-arch image and the release workflow** have not run. The single-platform image has been built and checked
+  in CI, which closes D38.
 - **Role isolation** has not run (see M4).

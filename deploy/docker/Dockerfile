@@ -1,13 +1,15 @@
 # Build from the repository root:
 #   docker build -f deploy/docker/Dockerfile -t snowstate .
-FROM golang:1.27 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
 ARG COMMIT=none
-RUN CGO_ENABLED=0 go build -trimpath \
+ARG TARGETOS=linux
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -ldflags "-s -w -X github.com/thunter/snowstate/internal/buildinfo.Version=${VERSION} -X github.com/thunter/snowstate/internal/buildinfo.Commit=${COMMIT}" \
     -o /out/snowstate ./cmd/snowstate
 

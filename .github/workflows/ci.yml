@@ -61,9 +61,13 @@ jobs:
         run: |
           test "$(docker inspect -f '{{.Config.User}}' snowstate:ci)" = "65532:65532"
           docker run --rm --read-only snowstate:ci version
+      - uses: docker/setup-buildx-action@v3
+      - name: Builds for every image platform
+        run: make image-multiarch VERSION=ci
   integration:
-    # Runs on manual dispatch, or on main when the secret is present.
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    # Needs a real Snowflake account, so it shows as skipped, not passed, until
+    # the SNOWFLAKE_* variables and the SNOWFLAKE_PRIVATE_KEY secret are set.
+    if: vars.SNOWFLAKE_ACCOUNT != '' && (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     env:
       SNOWSTATE_IT_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
@@ -73,18 +77,15 @@ jobs:
       SNOWSTATE_IT_DATABASE: ${{ vars.SNOWFLAKE_DATABASE }}
       SNOWSTATE_IT_AUTH: keypair
       SNOWSTATE_IT_PRIVATE_KEY_PATH: ${{ github.workspace }}/.it-key.p8
-      HAS_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY != '' }}
+      SNOWSTATE_IT_ROLE_A: ${{ vars.SNOWFLAKE_ROLE_A }}
+      SNOWSTATE_IT_ROLE_B: ${{ vars.SNOWFLAKE_ROLE_B }}
     steps:
       - uses: actions/checkout@v4
-        if: env.HAS_KEY == 'true'
       - uses: actions/setup-go@v5
-        if: env.HAS_KEY == 'true'
         with: { go-version-file: go.mod }
-      - if: env.HAS_KEY == 'true'
-        run: printf '%s' "$KEY" > .it-key.p8 && chmod 600 .it-key.p8
+      - run: printf '%s' "$KEY" > .it-key.p8 && chmod 600 .it-key.p8
         env: { KEY: "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" }
-      - if: env.HAS_KEY == 'true'
-        run: make tools integration
+      - run: make tools integration
   github-wif:
     # Dogfoods the recommended setup: real Snowflake through GitHub OIDC. It needs
     # the OIDC user from dev_setup.md and the `integration` environment.

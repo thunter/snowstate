@@ -886,13 +886,13 @@ The M1–M6 acceptance criteria also include the G7 requirements: `TestImportBou
 
 | # | Item | Default if unanswered |
 |---|---|---|
-| A1 | Snowflake account is on AWS or Azure (hybrid tables GA) | Assume yes, and build hybrid first |
+| A1 | Snowflake account is on AWS or Azure (hybrid tables GA) | AWS |
 | A2 | Where Terraform runs (CI system, laptops) | Support both: server + sidecar |
 | A3 | Snowflake auth for the service | Key-pair service user |
 | A4 | Terraform vs OpenTofu | Test both |
 | A5 | Expected scale | < 1,000 states, < 50 MiB each, < 10 req/s |
 | A6 | Retention | 100 versions per state + Time Travel |
-| A7 | Whether Snowflake Postgres + `pg` backend was ruled out (see `docs/initial-review.md`) | Proceed with the build |
+| A7 | Whether Snowflake Postgres + `pg` backend was ruled out (see `docs/initial-review.md`) | postgres backend is rulled out |
 | A8 | Whether teams need isolation from each other when clients connect to Snowflake directly | Implement both tenancy modes. Default `shared`. |
 | A9 | Whether to build M7 now or wait for `state_store` to reach stable Terraform | Build after v1.0, as experimental |
 | A10 | GitHub-hosted vs self-hosted runners, and whether the Snowflake account enforces network policies | Support both. Document all three network options (§8.4.2). |
