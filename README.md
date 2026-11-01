@@ -14,6 +14,11 @@
   <a href="go.mod"><img src="https://img.shields.io/github/go-mod/go-version/thunter/snowstate" alt="Go version"></a>
 </p>
 
+> [!WARNING]
+> **Very, very alpha.** Statey is doing his best, but he hasn't been out in a real blizzard yet. Don't use snowstate for
+> production state, and expect breaking changes before v1.0. If something breaks, please
+> [raise an issue](https://github.com/thunter/snowstate/issues/new).
+
 Terraform needs somewhere safe to keep its state, and if your organisation already runs on Snowflake, that usually means
 standing up a separate bucket, a lock table and another set of credentials just for this one job.
 
@@ -63,7 +68,7 @@ the backend block.
 
 ## Project status
 
-snowstate is **pre-1.0**, so expect rough edges, and try it somewhere safe before trusting it with production state.
+snowstate is **alpha and pre-1.0**, so expect rough edges, and try it somewhere safe before trusting it with production state.
 
 - Hybrid tables are required for production locking. They are generally available on AWS and Azure, and in preview on GCP.
 - There are no published releases yet, so for now you build from source.
