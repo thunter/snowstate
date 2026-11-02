@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Downloads the pinned Terraform and OpenTofu binaries the e2e suite drives
-# into .tools/, verifying each archive against its published SHA256SUMS.
+# Downloads the pinned Terraform and OpenTofu binaries the e2e suite and the
+# Foundation check use into .tools/, verifying each archive against its published SHA256SUMS.
 set -euo pipefail
 
 TF_OLD=1.5.7

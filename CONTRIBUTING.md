@@ -10,6 +10,7 @@ You need Go 1.27 or later, `golangci-lint`, `make` and `curl`.
 make build
 make lint test     # unit tests, no network
 make e2e           # downloads Terraform and OpenTofu, then runs them against a memory store
+make foundation-check   # checks the Terraform in deploy/terraform, no credentials needed
 ```
 
 `make integration` runs against real Snowflake. It needs the `SNOWSTATE_IT_*` variables in `dev_setup.md`, and skips itself
@@ -19,7 +20,7 @@ without them. Please run it for anything that changes Snowflake behaviour.
 
 - Branch from `main`. Direct pushes to `main` are blocked.
 - Keep each pull request to one change, with a test for any new or fixed behaviour.
-- `make lint test e2e` must pass. CI skips its long jobs when a pull request only changes `docs/`, Markdown files,
+- `make lint test e2e` must pass, and `make foundation-check` if you change `deploy/terraform`. CI skips its long jobs when a pull request only changes `docs/`, Markdown files,
   `LICENSE` or `NOTICE`.
 - Update `CHANGELOG.md` and any affected docs.
 

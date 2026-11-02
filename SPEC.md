@@ -671,12 +671,12 @@ Points the docs must explain:
 
 - **`seed`** prints the Seed SQL with the public key filled in. It never connects to Snowflake, because the Seed needs `ACCOUNTADMIN`. It rejects a private key rather than echoing it.
 - **`install`** creates an Install, or updates its Foundation. The Terraform code is embedded in the binary and written to a directory the operator keeps (`--dir`, default `./snowstate-foundation`). Steps, in order:
-  1. Write the code. If the directory differs from the embedded code, stop and show the difference. Never overwrite it.
+  1. Write the code, with the backend block disabled. If the shipped files in the directory differ from the embedded code, stop and show the difference. Never overwrite them. The enabled backend block counts as its disabled form, and generated or operator files, such as `.terraform.lock.hcl` and `terraform.tfvars`, are ignored.
   2. Show the plan and apply with local state, as the Seed role. Nothing is applied without approval unless `--auto-approve` is passed.
   3. Run `migrate` as `<DB>_ADMIN`.
   4. Run `doctor` as `<DB>_SVC`, so the runtime role's grants are proven before anything depends on them.
-  5. Only after `doctor` passes, move the state into snowstate with `init -migrate-state`, as `<DB>_SVC`, under the key `snowstate/foundation/default`.
-  6. Remove the local state file.
+  5. Only after `doctor` passes, enable the backend block and move the state into snowstate with `init -migrate-state`, as `<DB>_SVC`, under the key `snowstate/foundation/default`.
+  6. Remove the local state file and its backup.
 - **Re-running** is safe at any point. `install` works out what is done and continues. Once state is in snowstate, it plans and applies through the sidecar, so a re-run is also how an operator makes later Foundation changes.
 - Each step uses its own role, with one user, `SNOWSTATE_SEED`. A failed step says which step failed and what to do next. A missing Terraform or OpenTofu binary fails before anything changes.
 - **Teardown is manual on purpose:** move the state back to local, remove `prevent_destroy`, then run `terraform destroy`. Destroying with state in snowstate would remove the state mid-run.
@@ -767,7 +767,7 @@ Validate on startup and fail with an aggregated list of errors.
    - **Seed**, run by an admin once per account: role and service user `SNOWSTATE_SEED` (key-pair, `TYPE = SERVICE`). The role holds `CREATE WAREHOUSE`, `CREATE DATABASE`, `CREATE ROLE`, `CREATE USER` and `MANAGE GRANTS` on the account, and is granted to `SYSADMIN`. The user is for Foundation changes only and never goes on a server.
    - **Foundation**, one Terraform root module: warehouse, database, managed-access schema, roles and grants. `database_name` is required, the schema defaults to `BACKEND`, and account-level names derive from the database name, such as `<DB>_ADMIN`, and can be overridden. `prevent_destroy` is set on the database and schema from the first apply. Its outputs give the settings and commands for later steps, with no secrets.
    - Warehouse `<DB>_WH`: X-Small, auto-suspend 60.
-   - Role `<DB>_ADMIN`: creates and owns schema objects, and runs `migrate`. It gets `CREATE TABLE`, `CREATE STAGE` and `CREATE VIEW` on the schema (**VERIFY** the privilege hybrid tables need), and is granted to the user `SNOWSTATE_SEED`. The Seed role keeps schema ownership. `migrate` owns tables, stage and view, and Terraform never defines them.
+   - Role `<DB>_ADMIN`: creates and owns schema objects, and runs `migrate`. It gets `CREATE TABLE`, `CREATE HYBRID TABLE`, `CREATE STAGE` and `CREATE VIEW` on the schema, and is granted to the user `SNOWSTATE_SEED`. The Seed role keeps schema ownership. `migrate` owns tables, stage and view, and Terraform never defines them.
    - Role `<DB>_SVC` (runtime): `SELECT/INSERT/UPDATE/DELETE` on the tables, `READ/WRITE` on the stage, `USAGE` on the warehouse, database and schema. No DDL. Table and stage access are future grants, applied before `migrate`. It is granted to `<DB>_ADMIN`, which is how the user `SNOWSTATE_SEED` reaches it.
    - Role `<DB>_READER`: `USAGE` plus future `SELECT` on views, so it reaches `STATE_RESOURCES` with no raw state. Any future view must also be free of raw state.
    - Service user `<DB>_SERVICE`, created only when a public key is passed. Terraform takes public keys as variables and never generates a private key.

@@ -13,7 +13,7 @@ IMAGE_PLATFORMS := linux/amd64,linux/arm64
 # Extra flags for image-multiarch, such as --push and --tag options.
 IMAGE_ARGS ?=
 
-.PHONY: all build release image image-multiarch lint test cover e2e integration vuln tools clean
+.PHONY: all build release image image-multiarch lint test cover e2e integration vuln tools clean foundation-check
 
 all: lint test build
 
@@ -52,6 +52,10 @@ cover:
 # Downloads pinned Terraform and OpenTofu binaries into .tools (see test/e2e/tools.sh).
 tools:
 	./test/e2e/tools.sh
+
+# Checks the Foundation with each pinned Terraform and OpenTofu, no credentials needed.
+foundation-check: tools
+	./deploy/terraform/check.sh
 
 e2e: tools
 	go test -count=1 -timeout 30m ./test/e2e/...

@@ -389,3 +389,16 @@ marked unverified.
 **D63. `install` runs `doctor` as `<DB>_SVC`, not `<DB>_ADMIN`.** The admin role owns the tables, so a round trip as
 admin would pass even with broken runtime grants, and the fault would first show up during the state move. `<DB>_SVC`
 reaches the Seed user through `<DB>_ADMIN`, because a user can activate any role below one it holds.
+
+**D64. Hybrid tables need their own privilege (VERIFY outcome).** On a real account, `migrate` failed with `003001`:
+`CREATE TABLE` is not enough, and the role must hold `CREATE HYBRID TABLE` on the schema. Future grants on `TABLES` do
+reach hybrid tables: `doctor` wrote and deleted a lock row as `<DB>_SVC` with no other grant on `LOCKS`. A user can
+activate a role below one it holds, which confirms D63: of this Install's roles, `SNOWSTATE_SEED` holds only
+`<DB>_ADMIN`, and it ran as `<DB>_SVC`. Provider 2.22.1 needed no preview features for any resource.
+
+**D65. The backend block ships disabled, as `backend.tf.disabled` (deviates from §8.5 as first written).** A backend
+block in the first apply would point at something that does not exist until `migrate` has run. So it stays out of the
+configuration until the state moves, when it is renamed. `-migrate-state` leaves an empty `terraform.tfstate` and a full
+`terraform.tfstate.backup`, so both are removed afterwards. Because of this rename, and because the directory also gains
+`.terraform.lock.hcl` and `terraform.tfvars`, `install` compares shipped files only, treating `backend.tf` as its
+disabled form.
