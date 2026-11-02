@@ -764,13 +764,13 @@ Validate on startup and fail with an aggregated list of errors.
 3. State bodies are never logged at any level. Log size, MD5 and serial only.
 4. Rate-limit failed auth per remote IP (default 10 per minute, then `429`).
 5. Set up an Install with a Seed and a Foundation (§8.5). An Install is identified by its `database_name`, so one account can hold several:
-   - **Seed**, run by an admin once per account: role and service user `SNOWSTATE_SEED` (key-pair, `TYPE = SERVICE`). The role holds `CREATE WAREHOUSE`, `CREATE DATABASE`, `CREATE ROLE`, `CREATE USER` and `MANAGE GRANTS` on the account, and is granted to `SYSADMIN`. The user is for Foundation changes only and never goes on a server.
+   - **Seed**, run by an admin once per account: role and service user `SNOWSTATE_SEED` (key-pair, `TYPE = SERVICE`, `DEFAULT_SECONDARY_ROLES = ()`, so a session has only the role it asked for). The role holds `CREATE WAREHOUSE`, `CREATE DATABASE`, `CREATE ROLE`, `CREATE USER` and `MANAGE GRANTS` on the account, and is granted to `SYSADMIN`. The user is for Foundation changes only and never goes on a server.
    - **Foundation**, one Terraform root module: warehouse, database, managed-access schema, roles and grants. `database_name` is required, the schema defaults to `BACKEND`, and account-level names derive from the database name, such as `<DB>_ADMIN`, and can be overridden. `prevent_destroy` is set on the database and schema from the first apply. Its outputs give the settings and commands for later steps, with no secrets.
    - Warehouse `<DB>_WH`: X-Small, auto-suspend 60.
-   - Role `<DB>_ADMIN`: creates and owns schema objects, and runs `migrate`. It gets `CREATE TABLE`, `CREATE HYBRID TABLE`, `CREATE STAGE` and `CREATE VIEW` on the schema, and is granted to the user `SNOWSTATE_SEED`. The Seed role keeps schema ownership. `migrate` owns tables, stage and view, and Terraform never defines them.
+   - Role `<DB>_ADMIN`: creates and owns schema objects, and runs `migrate`. It gets `CREATE TABLE`, `CREATE HYBRID TABLE`, `CREATE STAGE` and `CREATE VIEW` on the schema, and is granted to both the role and the user `SNOWSTATE_SEED`, which keeps the Install under `SYSADMIN`. The Seed role keeps schema ownership. `migrate` owns tables, stage and view, and Terraform never defines them.
    - Role `<DB>_SVC` (runtime): `SELECT/INSERT/UPDATE/DELETE` on the tables, `READ/WRITE` on the stage, `USAGE` on the warehouse, database and schema. No DDL. Table and stage access are future grants, applied before `migrate`. It is granted to `<DB>_ADMIN`, which is how the user `SNOWSTATE_SEED` reaches it.
    - Role `<DB>_READER`: `USAGE` plus future `SELECT` on views, so it reaches `STATE_RESOURCES` with no raw state. Any future view must also be free of raw state.
-   - Service user `<DB>_SERVICE`, created only when a public key is passed. Terraform takes public keys as variables and never generates a private key.
+   - Service user `<DB>_SERVICE`, created only when a public key is passed, with secondary roles off. Terraform takes public keys as variables and never generates a private key.
    - A sample network policy in `docs/operator-guide.md`, not in the Foundation.
 6. Container runs as non-root on a read-only root filesystem.
 7. `govulncheck` passes in CI.

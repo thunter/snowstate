@@ -7,10 +7,12 @@ CREATE ROLE IF NOT EXISTS SNOWSTATE_SEED COMMENT = 'Creates and changes snowstat
 GRANT CREATE WAREHOUSE, CREATE DATABASE, CREATE ROLE, CREATE USER, MANAGE GRANTS ON ACCOUNT TO ROLE SNOWSTATE_SEED;
 GRANT ROLE SNOWSTATE_SEED TO ROLE SYSADMIN;
 
--- Key-pair auth. Paste the public key body.
+-- Key-pair auth. Paste the public key body. Secondary roles stay off, so a session
+-- has only the role it asked for, not every role this user holds.
 CREATE USER IF NOT EXISTS SNOWSTATE_SEED
   TYPE = SERVICE
   DEFAULT_ROLE = SNOWSTATE_SEED
+  DEFAULT_SECONDARY_ROLES = ()
   RSA_PUBLIC_KEY = '<public key body>'
   COMMENT = 'Foundation changes only. Never put this key on a server.';
 GRANT ROLE SNOWSTATE_SEED TO USER SNOWSTATE_SEED;

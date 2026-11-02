@@ -89,6 +89,13 @@ resource "snowflake_grant_account_role" "admin_to_seed_user" {
   user_name = local.seed
 }
 
+# Keeps the Install under SYSADMIN. A managed-access schema also needs this: an
+# object's new owner must sit below the schema owner, or recovery cannot reassign it (D67).
+resource "snowflake_grant_account_role" "admin_to_seed_role" {
+  role_name        = snowflake_account_role.admin.name
+  parent_role_name = local.seed
+}
+
 resource "snowflake_grant_privileges_to_account_role" "warehouse" {
   for_each          = local.roles
   account_role_name = each.value.name
@@ -166,6 +173,8 @@ resource "snowflake_service_user" "server" {
   default_role      = snowflake_account_role.runtime.name
   default_warehouse = snowflake_warehouse.this.name
   rsa_public_key    = var.service_public_key
+
+  default_secondary_roles_option = "NONE"
 }
 
 resource "snowflake_grant_account_role" "runtime_to_server" {

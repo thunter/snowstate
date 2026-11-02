@@ -182,7 +182,7 @@ the default workspace is the literal segment `default`: `platform/network/defaul
 | [CLI reference](docs/cli-reference.md) | Every command and flag, with examples |
 | [Operator guide](docs/operator-guide.md) | Bootstrap, deployment, TLS, tokens, retention, cost, upgrades |
 | [GitHub Actions](docs/github-actions.md) | Workload identity, the setup action, plan and apply across jobs |
-| [Runbook](docs/runbook.md) | Stuck locks, outages, bad states, key rotation |
+| [Runbook](docs/runbook.md) | Stuck locks, outages, bad states, key rotation, recovering or removing an Install |
 | [Decisions](docs/decisions.md) | Every verified behaviour and every deviation from the spec |
 | [Example config](snowstate.example.yaml) | Every configuration key |
 | [Examples](examples) | Module and CI examples |

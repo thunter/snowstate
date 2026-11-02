@@ -388,13 +388,15 @@ marked unverified.
 
 **D63. `install` runs `doctor` as `<DB>_SVC`, not `<DB>_ADMIN`.** The admin role owns the tables, so a round trip as
 admin would pass even with broken runtime grants, and the fault would first show up during the state move. `<DB>_SVC`
-reaches the Seed user through `<DB>_ADMIN`, because a user can activate any role below one it holds.
+reaches the Seed user through `<DB>_ADMIN`, because a user can activate any role below one it holds. This only means
+anything with secondary roles off (D66).
 
 **D64. Hybrid tables need their own privilege (VERIFY outcome).** On a real account, `migrate` failed with `003001`:
 `CREATE TABLE` is not enough, and the role must hold `CREATE HYBRID TABLE` on the schema. Future grants on `TABLES` do
 reach hybrid tables: `doctor` wrote and deleted a lock row as `<DB>_SVC` with no other grant on `LOCKS`. A user can
 activate a role below one it holds, which confirms D63: of this Install's roles, `SNOWSTATE_SEED` holds only
-`<DB>_ADMIN`, and it ran as `<DB>_SVC`. Provider 2.22.1 needed no preview features for any resource.
+`<DB>_ADMIN`, and it ran as `<DB>_SVC`. Provider 2.22.1 needed no preview features for any resource. The first run of
+this had secondary roles on, so it proved nothing (D66). It was re-proven from an empty start with them off.
 
 **D65. The backend block ships disabled, as `backend.tf.disabled` (deviates from §8.5 as first written).** A backend
 block in the first apply would point at something that does not exist until `migrate` has run. So it stays out of the
@@ -402,3 +404,30 @@ configuration until the state moves, when it is renamed. `-migrate-state` leaves
 `terraform.tfstate.backup`, so both are removed afterwards. Because of this rename, and because the directory also gains
 `.terraform.lock.hcl` and `terraform.tfvars`, `install` compares shipped files only, treating `backend.tf` as its
 disabled form.
+
+**D66. The Seed user and `<DB>_SERVICE` have secondary roles off (VERIFY outcome, deviates from §10 as first written).**
+Snowflake gives a new user `DEFAULT_SECONDARY_ROLES = ('ALL')`, so a session as `<DB>_SVC` also had `<DB>_ADMIN` and the
+Seed role. The drills caught this: `doctor` passed with the runtime role's grants revoked. The role split therefore did
+not limit mistakes, and `doctor` proved nothing about the runtime role. `DEFAULT_SECONDARY_ROLES = ()` fixes both. A
+user from a laptop will often still have them on, so `doctor` should warn (#12).
+
+**D67. `<DB>_ADMIN` is granted to the Seed role (VERIFY outcome, deviates from §10 as first written).** Without it,
+recovery fails with `003514`: in a managed-access schema, an object's new owner must sit below the schema owner. It also
+puts the Install under `SYSADMIN`, which the Seed promised and did not deliver, because `<DB>_ADMIN`'s tables were out
+of reach. The cost is that the Seed role and `SYSADMIN` can now read raw state, which is what an admin needs in a
+recovery.
+
+**D68. Terraform cannot restore grants on existing tables (VERIFY outcome, deviates from #10).** It manages future
+grants, and those still look correct when the grants on existing tables are gone, so a plan shows no changes.
+`<DB>_ADMIN` cannot regrant either: `003509`, a managed-access schema needs the schema owner. The fix is SQL as the Seed
+role, in the runbook. Managing `ALL` grants in Terraform would need an apply after `migrate` on every Install, which
+isn't worth it for a rare failure.
+
+**D69. Dropping a role removes the grants it issued (VERIFY outcome).** Dropping the Seed role wiped the role chain and
+all of the runtime role's access. Dropping `<DB>_ADMIN` also removed the runtime role's table grants. Terraform can't
+help until the path to the state is rebuilt by hand, so those procedures are the longest in the runbook. Each was run
+from a healthy Install, because a first attempt starting from a broken one hid a missing step.
+
+**D70. Teardown leaves the Seed in place (reads §14 M8 narrowly).** "Teardown leaves nothing behind" means nothing from
+the Install: on a real account, 21 resources were destroyed and no `TF_STATE_TEST` objects remained, in each of three
+runs. The Seed is per account, and other Installs may use it.
