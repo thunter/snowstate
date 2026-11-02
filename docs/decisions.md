@@ -346,3 +346,46 @@ immutable under the ruleset, so a failed tag means a new version number, not a r
 - **The multi-arch image and the release workflow** have not run. The single-platform image has been built and checked
   in CI, which closes D38.
 - **Role isolation** has not run (see M4).
+
+## M8: One-command install
+
+**D56. Terraform owns the Foundation, and `migrate` owns what is inside the schema.** Moving tables into Terraform would
+duplicate the schema outside the binary, break version tracking in `SCHEMA_MIGRATIONS`, and leave sidecar users who only
+have the binary with no way to upgrade. The cost is two tools with a shared boundary, so grants to `<DB>_SVC` and
+`<DB>_READER` are future grants, applied before `migrate`. That also removes the ordering problem that stopped
+`bootstrap.sql` running top to bottom. `<DB>_READER` can read any future view, so every view must stay free of raw
+state.
+
+**D57. The Foundation's state lives in the backend it helps run (self-hosted).** If a bad apply breaks the warehouse or
+roles, the backend can't be used to read the state that would fix them. A separate store, such as S3, would avoid that,
+but it brings back the bucket snowstate exists to avoid. The state stays readable in Snowflake tables with admin access,
+so the risk is accepted, with `prevent_destroy` on the database and schema and tested recovery procedures in the
+runbook.
+
+**D58. `snowstate` orchestrates the real Terraform and never reimplements it.** `install` runs the real binary, and
+every step stays documented and runnable by hand, so recovery never depends on the CLI. The Terraform code is embedded
+so a binary-only user has it, and is written to a directory the operator keeps, so they can read and commit it.
+
+**D59. `install` uses one user, `SNOWSTATE_SEED`, and a role per step.** The role split limits mistakes, not a stolen
+key, because the key holder can use any of its roles. A second user would only help once CI holds a separate state key,
+and it adds manual setup, which is what the Seed is meant to minimise. So the user is for Foundation changes only and
+never goes on a server.
+
+**D60. Names derive from `database_name` (deviates from §9 and §10 as first written).** Roles, warehouses and users are
+account-level, so a unique database alone would leave two Installs sharing `SNOWSTATE_ADMIN`, making an admin of one an
+admin of both. A default Install therefore has `TF_STATE_ADMIN`, not `SNOWSTATE_ADMIN`, and the configuration defaults
+change to match. This is a breaking change, accepted before v1.0.
+
+**D61. M7 is Deferred (deviates from §14 as first written).** `state_store` still only works in alpha builds, so effort
+goes to what exists today. G7, §14.2 and `TestImportBoundaries` stay, because the core staying frontend-neutral is what
+keeps the option open, at almost no cost.
+
+**D62. `schema_per_project` and GitHub identity setup leave the shipped SQL (deviates from §5.3 and §8.4.1 as first
+written).** `bootstrap.sql` goes away, and neither has a Foundation version yet: the first has a known login failure and
+unverified role isolation, the second has never had a real login, and provider 2.22 has no workload identity attribute
+on service users. Terraforming them now would encode untested behaviour, so their setup moves to the operator guide,
+marked unverified.
+
+**D63. `install` runs `doctor` as `<DB>_SVC`, not `<DB>_ADMIN`.** The admin role owns the tables, so a round trip as
+admin would pass even with broken runtime grants, and the fault would first show up during the state move. `<DB>_SVC`
+reaches the Seed user through `<DB>_ADMIN`, because a user can activate any role below one it holds.
