@@ -1,0 +1,5 @@
+# Rename to backend.tf when moving the state into snowstate. It stays out of the
+# first apply, because the backend does not exist until migrate has run.
+terraform {
+  backend "http" {}
+}

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add the Foundation, a Terraform module for an Install's account-level objects, and the Seed that starts it.
+- Add runbook procedures for recovering and removing an Install.
+
 ## 0.1.0 - 2026-11-01
 
 - HTTP state backend protocol over a frontend-neutral core, with an in-memory store for tests.

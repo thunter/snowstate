@@ -1,6 +1,12 @@
 # snowstate: Terraform/OpenTofu HTTP State Backend on Snowflake
 
-**Build specification v1.2** · 31 October 2026 · Owner: Todd Hunter
+**Build specification v1.3** · 2 November 2026 · Owner: Todd Hunter
+
+> **v1.3 changes:** The install path moves from a SQL script to a Seed, a Terraform-managed Foundation and `snowstate install`.
+> - The Seed and Foundation replace `bootstrap.sql` (§8.5, §10).
+> - Account-level names derive from the database name, so an account can hold several Installs (§10).
+> - `schema_per_project` and GitHub identity setup move to the operator guide, marked unverified (§5.3, §8.4.1).
+> - M7 is Deferred, and new milestone M8 is required for v1.0 (§14).
 
 > **v1.2 changes:**
 > - GitHub Actions is a first-class target (§8.4): workload identity federation auth (§5.2), saved-plan portability and abort behaviour in sidecar mode (§8.1), a setup action, reference workflows, and new e2e scenarios 9–11.
@@ -40,7 +46,7 @@ Terraform and OpenTofu have no Snowflake backend. Neither supports third-party b
 - Hosting inside Snowpark Container Services (SPCS ingress requires a `Snowflake Token` header, and Terraform's `http` backend can only send Basic auth). Leave a seam for this, but don't build it.
 - Multi-account or cross-region replication (rely on Snowflake replication if needed).
 - Shared or read-only locks.
-- A production-ready Terraform provider. M7 builds it as **experimental** only, because `state_store` works only in Terraform alpha builds.
+- A Terraform provider. M7 is **Deferred** because `state_store` works only in Terraform alpha builds, and it stays a future option (§14).
 
 ---
 
@@ -128,12 +134,14 @@ type StateService interface {
 /provider/                  # M7 only: separate module terraform-provider-snowstate (own go.mod, `replace` to ../ in dev)
 /internal/config/
 /internal/sidecar/        # `exec` subcommand implementation
+/internal/install/        # `install` step order and resume logic
 /internal/obs/            # logging, metrics, request IDs
 /test/e2e/                # runs real terraform + tofu binaries
 /test/integration/        # runs against real Snowflake (build tag `integration`)
 /deploy/docker/Dockerfile
 /deploy/k8s/              # example manifests
-/deploy/snowflake/bootstrap.sql   # admin-run: role, warehouse, database, grants
+/deploy/snowflake/seed.sql        # admin-run once per account: the Seed role and user
+/deploy/terraform/foundation/     # Terraform root module for the Foundation, embedded in the binary
 /examples/terraform/      # sample root module using the backend
 /docs/                    # operator guide, decisions.md, runbook.md
 Makefile, .golangci.yml, README.md, CHANGELOG.md
@@ -295,9 +303,9 @@ Implementation:
   - `SELECT, INSERT, DELETE` on `LOCKS`;
   - `READ, WRITE` on the stage.
 
-  GC, restore-overwrite and token admin need `SNOWSTATE_ADMIN`. So even a client with direct credentials can't erase history.
+  GC, restore-overwrite and token admin need the Install's admin role (`<DB>_ADMIN`, §10). So even a client with direct credentials can't erase history.
 - **Audit in direct mode** is written by the client and is therefore advisory. Document `SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY` / `ACCESS_HISTORY`, filtered by the `snowstate:` query tag, as the authoritative trail.
-- `bootstrap.sql` provides both variants.
+- The Foundation (§10) provides `shared` tenancy. `schema_per_project` setup is in `docs/operator-guide.md`, marked unverified, until its known login failure is fixed and its role isolation is verified.
 
 ---
 
@@ -494,6 +502,8 @@ Use `database/sql` transactions with gosnowflake (it supports multi-statement tr
 ```
 snowstate serve      [--config file] [flags]        # server mode
 snowstate exec       [--config file] -- <cmd> [args] # sidecar mode
+snowstate seed       --public-key-file path          # print the Seed SQL, never run it (§8.5)
+snowstate install    --database name [--dir path] [--auto-approve] [--binary terraform|tofu]   # create or update an Install (§8.5)
 snowstate migrate    [--dry-run]                     # create/upgrade schema
 snowstate doctor                                     # connectivity, grants, hybrid support, warehouse, round-trip test
 snowstate token create  --principal NAME --scope 'platform/*:read,write,lock' [--expires 90d] [--description ..]
@@ -547,14 +557,14 @@ Checks and prints pass/fail for: config parse, Snowflake auth, role/warehouse/da
 
 GitHub Actions is a first-class target. The recommended pattern is **sidecar mode + workload identity federation**: no snowstate server, and no stored Snowflake secret.
 
-**8.4.1 Snowflake setup (in `deploy/snowflake/bootstrap.sql`, GitHub variant)**
+**8.4.1 Snowflake setup (in `docs/operator-guide.md`, marked unverified, and not in the Foundation yet)**
 
 ```sql
 -- One service user per repo+environment (or per repo, using a customised `sub` claim)
 CREATE USER GH_PLATFORM_NETWORK_PROD
   TYPE = SERVICE
-  DEFAULT_ROLE = SNOWSTATE_P_PLATFORM          -- project role (§5.3) or SNOWSTATE_SVC (shared tenancy)
-  DEFAULT_WAREHOUSE = SNOWSTATE_WH
+  DEFAULT_ROLE = SNOWSTATE_P_PLATFORM          -- project role (§5.3) or <DB>_SVC (shared tenancy, §10)
+  DEFAULT_WAREHOUSE = <DB>_WH
   WORKLOAD_IDENTITY = (
     TYPE    = OIDC
     ISSUER  = 'https://token.actions.githubusercontent.com'
@@ -655,6 +665,22 @@ Points the docs must explain:
 
 **8.4.5 Server mode from Actions (alternative).** If a shared `snowstate serve` exists, workflows can skip the sidecar. They set `TF_HTTP_ADDRESS`/`TF_HTTP_USERNAME` and pass `TF_HTTP_PASSWORD` from a GitHub secret (a scoped token, §5.1). The runner must be able to reach the server. Document this, but recommend the sidecar.
 
+### 8.5 Install (`seed`, `install`)
+
+`snowstate` orchestrates the real Terraform and never reimplements it. Every step stays documented and runnable by hand, so recovery never depends on the CLI.
+
+- **`seed`** prints the Seed SQL with the public key filled in. It never connects to Snowflake, because the Seed needs `ACCOUNTADMIN`. It rejects a private key rather than echoing it.
+- **`install`** creates an Install, or updates its Foundation. The Terraform code is embedded in the binary and written to a directory the operator keeps (`--dir`, default `./snowstate-foundation`). Steps, in order:
+  1. Write the code, with the backend block disabled. If the shipped files in the directory differ from the embedded code, stop and show the difference. Never overwrite them. The enabled backend block counts as its disabled form, and generated or operator files, such as `.terraform.lock.hcl` and `terraform.tfvars`, are ignored.
+  2. Show the plan and apply with local state, as the Seed role. Nothing is applied without approval unless `--auto-approve` is passed.
+  3. Run `migrate` as `<DB>_ADMIN`.
+  4. Run `doctor` as `<DB>_SVC`, so the runtime role's grants are proven before anything depends on them.
+  5. Only after `doctor` passes, enable the backend block and move the state into snowstate with `init -migrate-state`, as `<DB>_SVC`, under the key `snowstate/foundation/default`.
+  6. Remove the local state file and its backup.
+- **Re-running** is safe at any point. `install` works out what is done and continues. Once state is in snowstate, it plans and applies through the sidecar, so a re-run is also how an operator makes later Foundation changes.
+- Each step uses its own role, with one user, `SNOWSTATE_SEED`. A failed step says which step failed and what to do next. A missing Terraform or OpenTofu binary fails before anything changes.
+- **Teardown is manual on purpose:** move the state back to local, remove `prevent_destroy`, then run `terraform destroy`. Destroying with state in snowstate would remove the state mid-run.
+
 ---
 
 ## 9. Configuration
@@ -680,8 +706,8 @@ auth:
 snowflake:
   account: ""
   user: ""
-  role: SNOWSTATE_SVC
-  warehouse: SNOWSTATE_WH
+  role: TF_STATE_SVC           # <DB>_SVC, §10
+  warehouse: TF_STATE_WH       # <DB>_WH, §10
   database: TF_STATE
   schema: BACKEND
   auth: keypair                # keypair | pat | oauth | externalbrowser | password | workload_identity
@@ -737,11 +763,15 @@ Validate on startup and fail with an aggregated list of errors.
 2. Tokens are hashed with HMAC-SHA256 plus a pepper, compared in constant time, and never logged. Revocation takes effect within the cache TTL (60 s).
 3. State bodies are never logged at any level. Log size, MD5 and serial only.
 4. Rate-limit failed auth per remote IP (default 10 per minute, then `429`).
-5. Ship `deploy/snowflake/bootstrap.sql` that an admin runs once, creating:
-   - Role `SNOWSTATE_ADMIN` (owns schema objects, runs `migrate`) and role `SNOWSTATE_SVC` (runtime: `SELECT/INSERT/UPDATE/DELETE` on the tables, `READ/WRITE` on the stage, `USAGE` on the warehouse, database and schema). No DDL for SVC.
-   - Role `SNOWSTATE_READER`: `SELECT` on the `STATE_RESOURCES` view only (no raw state).
-   - Warehouse `SNOWSTATE_WH` (X-Small, auto-suspend 60), database `TF_STATE`, schema `BACKEND` (managed access schema).
-   - A service user template with key-pair auth and `TYPE = SERVICE`, plus a sample network policy.
+5. Set up an Install with a Seed and a Foundation (§8.5). An Install is identified by its `database_name`, so one account can hold several:
+   - **Seed**, run by an admin once per account: role and service user `SNOWSTATE_SEED` (key-pair, `TYPE = SERVICE`, `DEFAULT_SECONDARY_ROLES = ()`, so a session has only the role it asked for). The role holds `CREATE WAREHOUSE`, `CREATE DATABASE`, `CREATE ROLE`, `CREATE USER` and `MANAGE GRANTS` on the account, and is granted to `SYSADMIN`. The user is for Foundation changes only and never goes on a server.
+   - **Foundation**, one Terraform root module: warehouse, database, managed-access schema, roles and grants. `database_name` is required, the schema defaults to `BACKEND`, and account-level names derive from the database name, such as `<DB>_ADMIN`, and can be overridden. `prevent_destroy` is set on the database and schema from the first apply. Its outputs give the settings and commands for later steps, with no secrets.
+   - Warehouse `<DB>_WH`: X-Small, auto-suspend 60.
+   - Role `<DB>_ADMIN`: creates and owns schema objects, and runs `migrate`. It gets `CREATE TABLE`, `CREATE HYBRID TABLE`, `CREATE STAGE` and `CREATE VIEW` on the schema, and is granted to both the role and the user `SNOWSTATE_SEED`, which keeps the Install under `SYSADMIN`. The Seed role keeps schema ownership. `migrate` owns tables, stage and view, and Terraform never defines them.
+   - Role `<DB>_SVC` (runtime): `SELECT/INSERT/UPDATE/DELETE` on the tables, `READ/WRITE` on the stage, `USAGE` on the warehouse, database and schema. No DDL. Table and stage access are future grants, applied before `migrate`. It is granted to `<DB>_ADMIN`, which is how the user `SNOWSTATE_SEED` reaches it.
+   - Role `<DB>_READER`: `USAGE` plus future `SELECT` on views, so it reaches `STATE_RESOURCES` with no raw state. Any future view must also be free of raw state.
+   - Service user `<DB>_SERVICE`, created only when a public key is passed, with secondary roles off. Terraform takes public keys as variables and never generates a private key.
+   - A sample network policy in `docs/operator-guide.md`, not in the Foundation.
 6. Container runs as non-root on a read-only root filesystem.
 7. `govulncheck` passes in CI.
 8. Document that state contains secrets, so access to `STATE_VERSIONS` and the stage must be restricted. Mention OpenTofu's client-side state encryption as compatible defence in depth. snowstate stores whatever bytes it receives, so encrypted states still work, and the inventory view will simply be empty for them.
@@ -766,6 +796,10 @@ Validate on startup and fail with an aggregated list of errors.
 ## 12. Testing requirements
 
 ### 12.1 Unit (no network), target ≥ 85% coverage on `service`, `api`, `auth`
+
+- `install`: fakes behind the engine's interface cover the role at each step, resuming from each step, no apply without approval, stopping on differing code, and clear errors at each failure.
+- `seed`: output with the key filled in, and errors for a bad key file.
+- The embedded Foundation code matches its source.
 
 - Protocol table tests covering **every row of §4.3**, using `store/memory`.
 - Key validation, scope matching, token HMAC, config validation, MD5 handling, size limits, idempotent PUT, force-unlock paths, serial-regression guard.
@@ -799,6 +833,7 @@ Run only when `SNOWSTATE_IT_*` env vars are set. Each run uses an isolated schem
 - `DECOMPRESS_STRING` view returns resources for a known fixture.
 - Restore and GC, including orphan stage blob removal.
 - The full e2e scenarios 1–3 re-run against Snowflake.
+- `install`: the real binary and real Terraform take an Install from nothing to Foundation state held in snowstate, including an interrupted run and a later Foundation change.
 - `schema_per_project`: two projects with two roles. Role A can't read, write or lock project B (it gets `ErrForbidden`, mapped to HTTP `403`). Project roles can't `DELETE`/`UPDATE` `STATE_VERSIONS` or `AUDIT_LOG`.
 
 ### 12.4 CI
@@ -807,6 +842,7 @@ GitHub Actions workflow: lint, unit, e2e on Linux and macOS, build multi-arch bi
 
 Additional CI requirements:
 - The release workflow publishes binaries plus `checksums.txt`, and optionally keyless cosign signatures. It moves the `v1` tag for `action/setup`.
+- `fmt -check` and `validate` on the Foundation, on Terraform and OpenTofu, with no credentials.
 - A `github-wif` integration job (manual dispatch) authenticates to a real Snowflake account via WIF (`token_source=github`) and runs e2e scenarios 1, 2 and 9. This dogfoods the recommended setup.
 
 ---
@@ -814,9 +850,9 @@ Additional CI requirements:
 ## 13. Documentation deliverables
 
 - `README.md`: what it is, quick start (sidecar in 5 minutes; server), and a backend config example.
-- `docs/operator-guide.md`: Snowflake bootstrap, deployment (Docker, K8s example, systemd), TLS, tokens, scopes, backup and restore, retention, cost, upgrading.
+- `docs/operator-guide.md`: the Seed, the Foundation, `install` and each of its steps by hand, teardown, the roles each command needs, deployment (Docker, K8s example, systemd), TLS, tokens, scopes, backup and restore, retention, cost, upgrading.
 - `docs/github-actions.md`: the §8.4 setup end to end (Snowflake WIF users and `sub` claims, the network policy options, the setup action, the reference workflow, plan/apply split, concurrency, cancellation and recovery, and the key-pair alternative).
-- `docs/runbook.md`: stuck locks (including "GitHub job killed mid-apply"), Snowflake outage (clients get 503 and retry), restoring a bad state, rotating keys and tokens, reading `AUDIT_LOG`, and sample SQL queries.
+- `docs/runbook.md`: stuck locks (including "GitHub job killed mid-apply"), Snowflake outage (clients get 503 and retry), restoring a bad state, rotating keys and tokens, reading `AUDIT_LOG`, sample SQL queries, and recovering an Install whose Foundation state is held in snowstate (lost warehouse, lost runtime grants, broken admin or Seed role).
 - `docs/decisions.md`: every VERIFY outcome and every deviation from this spec.
 - `examples/terraform/`: server-mode and sidecar-mode examples, and a GitHub Actions/GitLab CI snippet.
 - `CHANGELOG.md`.
@@ -825,7 +861,7 @@ Additional CI requirements:
 
 ## 14. Milestones and acceptance criteria
 
-Complete them in order. Each milestone ends with green `make lint test` and a commit.
+Complete them in order, except that a Deferred milestone doesn't block later ones. Each milestone ends with green `make lint test` and a commit.
 
 | # | Milestone | Done when |
 |---|---|---|
@@ -837,7 +873,8 @@ Complete them in order. Each milestone ends with green `make lint test` and a co
 | M5 | **Standard-mode locking (experimental)** and the hybrid-availability check in `migrate`. | The concurrency test result is recorded in `decisions.md`, and the gating flag works. |
 | M6 | **Hardening and packaging.** Rate limiting, graceful shutdown, Dockerfile, K8s example, multi-arch release build, govulncheck, all docs in §13. | A fresh reader can follow the README quick start successfully, the image runs as non-root, and CI is fully green. |
 | M6.5 | **GitHub Actions integration (§8.4).** `workload_identity` auth, sidecar saved-plan portability, abort behaviour, CI context and step summary, `action/setup`, reference workflows, `docs/github-actions.md`, and doctor network-policy hints. | E2E scenarios 9–11 pass in CI, and the `github-wif` job passes against a real account. |
-| M7 | **EXPERIMENTAL: `terraform-provider-snowstate` (Pluggable State Storage).** Optional, so do it after v1.0 and don't let it block the release. Details in §14.2. | §14.2 acceptance passes on the pinned Terraform alpha, and the CI job is non-blocking. |
+| M7 | **DEFERRED: `terraform-provider-snowstate` (Pluggable State Storage).** Not planned. Revisit if `state_store` reaches a stable Terraform release, and re-check the pinned alpha in §14.2 first. | §14.2 acceptance passes, and the CI job is non-blocking. |
+| M8 | **One-command install.** The Seed, the Foundation, `snowstate seed`, `snowstate install`, teardown, the recovery runbook, and removing `bootstrap.sql` (§8.5, §10). | The full flow works on a test Install from an empty start, all three recovery drills pass, teardown leaves nothing behind, and CI checks the Foundation on Terraform and OpenTofu. |
 
 The M1–M6 acceptance criteria also include the G7 requirements: `TestImportBoundaries` passes, every frontend goes through `pkg/snowstate/service`, keys follow §4.2, and `LOCKS` follows §6.1.
 
@@ -875,7 +912,7 @@ The M1–M6 acceptance criteria also include the G7 requirements: `TestImportBou
 
 ### 14.3 Definition of done (v1.0)
 
-- Every M0–M6.5 acceptance criterion above is met (M7 isn't required for v1.0), and no TODOs remain in code paths for §4.3.
+- Every M0–M6.5 and M8 acceptance criterion above is met (M7 isn't required for v1.0), and no TODOs remain in code paths for §4.3.
 - E2E passes for Terraform 1.5.x, the latest Terraform 1.x, and the latest OpenTofu.
 - Integration passes on a real Snowflake account in hybrid mode.
 - Documentation is complete, and `decisions.md` lists all VERIFY outcomes.
@@ -894,6 +931,6 @@ The M1–M6 acceptance criteria also include the G7 requirements: `TestImportBou
 | A6 | Retention | 100 versions per state + Time Travel |
 | A7 | Whether Snowflake Postgres + `pg` backend was ruled out (see `docs/initial-review.md`) | postgres backend is rulled out |
 | A8 | Whether teams need isolation from each other when clients connect to Snowflake directly | Implement both tenancy modes. Default `shared`. |
-| A9 | Whether to build M7 now or wait for `state_store` to reach stable Terraform | Build after v1.0, as experimental |
+| A9 | Whether to build M7 now or wait for `state_store` to reach stable Terraform | Wait for `state_store` to reach stable Terraform. M7 is Deferred. |
 | A10 | GitHub-hosted vs self-hosted runners, and whether the Snowflake account enforces network policies | Support both. Document all three network options (§8.4.2). |
 | A11 | Snowflake auth from GitHub Actions | Workload identity federation via GitHub OIDC, with key-pair as the documented fallback |

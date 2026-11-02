@@ -116,3 +116,165 @@ WHERE QUERY_TAG LIKE 'snowstate:%:<request_id>' ORDER BY START_TIME;
 
 A hybrid row allows about 20 waiting transactions. snowstate retries such conflicts for up to 30 s, then returns `503`,
 which clients retry. This is safe, because a retry can only lose to the primary key.
+
+## Recovering an Install
+
+The Foundation's state lives in the Install it describes, so Terraform can only help once snowstate can reach that state
+again. Each procedure below was run on a real Install. `<DB>` is the database name, and the examples use the derived role
+names and the `BACKEND` schema, so substitute any you overrode.
+
+During an outage you can't read `terraform output`, because that needs the state. Set the values by hand instead:
+
+```bash
+export SNOWSTATE_SNOWFLAKE__ACCOUNT=<org>-<account>
+export SNOWSTATE_SNOWFLAKE__USER=SNOWSTATE_SEED
+export SNOWSTATE_SNOWFLAKE__ROLE=<DB>_SVC
+export SNOWSTATE_SNOWFLAKE__WAREHOUSE=<DB>_WH
+export SNOWSTATE_SNOWFLAKE__DATABASE=<DB>
+export SNOWSTATE_SNOWFLAKE__SCHEMA=BACKEND
+export SNOWSTATE_SNOWFLAKE__PRIVATE_KEY_PATH=~/.snowflake/keys/snowstate_seed.p8
+export SNOWSTATE_KEY=snowstate/foundation/default
+```
+
+Afterwards, `snowstate doctor` should pass, and `snowstate exec -- terraform plan` should show no changes. Check the Seed
+user with `DESC USER SNOWSTATE_SEED` if `doctor` looks wrong: with secondary roles on, a session also has the user's other
+roles, and `doctor` can pass while the runtime role is broken. `doctor` doesn't touch the stage, so a stage problem only
+shows up when a large state is written.
+
+To read the state while the runtime role is broken:
+
+```bash
+SNOWSTATE_SNOWFLAKE__ROLE=<DB>_ADMIN snowstate state pull snowstate/foundation/default
+```
+
+### The warehouse was dropped
+
+`doctor` and `snowstate exec` fail with `390201 ... requested warehouse does not exist`. As the Seed role, recreate it under
+the same name:
+
+```sql
+CREATE WAREHOUSE <DB>_WH WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 60 AUTO_RESUME = TRUE INITIALLY_SUSPENDED = TRUE;
+GRANT USAGE ON WAREHOUSE <DB>_WH TO ROLE <DB>_SVC;
+```
+
+Then `snowstate exec -- terraform apply` restores the grants for the other roles.
+
+### The runtime role lost its schema access
+
+`doctor` fails with `390201 ... requested schema does not exist`. Apply as the admin role:
+
+```bash
+SNOWSTATE_SNOWFLAKE__ROLE=<DB>_ADMIN snowstate exec -- terraform apply
+```
+
+### The runtime role lost its table or stage grants
+
+`doctor` fails its `migrations` and `privileges` checks, and Terraform reports `HTTP remote state endpoint invalid auth`.
+**Terraform cannot fix this:** it manages future grants, which only cover new objects, so a plan as `<DB>_ADMIN` shows no
+changes. `<DB>_ADMIN` cannot regrant either, because in a managed-access schema that takes the schema owner. As the Seed
+role:
+
+```sql
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA <DB>.BACKEND TO ROLE <DB>_SVC;
+GRANT READ, WRITE ON ALL STAGES IN SCHEMA <DB>.BACKEND TO ROLE <DB>_SVC;
+```
+
+### The admin role was dropped
+
+`doctor` fails with `390186 ... Role '<DB>_SVC' ... is not granted to this user`, because the Seed user reaches the runtime
+role through the admin role. Dropping a role also removes the grants it issued, and hands what it owned to the role that
+dropped it. As the Seed role:
+
+```sql
+CREATE ROLE <DB>_ADMIN;
+GRANT ROLE <DB>_SVC TO ROLE <DB>_ADMIN;
+GRANT ROLE <DB>_ADMIN TO ROLE SNOWSTATE_SEED;
+GRANT ROLE <DB>_ADMIN TO USER SNOWSTATE_SEED;
+GRANT USAGE ON WAREHOUSE <DB>_WH TO ROLE <DB>_ADMIN;
+GRANT USAGE ON DATABASE <DB> TO ROLE <DB>_ADMIN;
+GRANT USAGE ON SCHEMA <DB>.BACKEND TO ROLE <DB>_ADMIN;
+```
+
+As the role that dropped it, here `ACCOUNTADMIN`, give back what it owned:
+
+```sql
+GRANT OWNERSHIP ON ALL TABLES IN SCHEMA <DB>.BACKEND TO ROLE <DB>_ADMIN COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON ALL STAGES IN SCHEMA <DB>.BACKEND TO ROLE <DB>_ADMIN COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON ALL VIEWS IN SCHEMA <DB>.BACKEND TO ROLE <DB>_ADMIN COPY CURRENT GRANTS;
+```
+
+Then apply as `<DB>_ADMIN`, and finish as the Seed role with the existing-object grants:
+
+```bash
+SNOWSTATE_SNOWFLAKE__ROLE=<DB>_ADMIN snowstate exec -- terraform apply
+```
+
+```sql
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA <DB>.BACKEND TO ROLE <DB>_SVC;
+GRANT READ, WRITE ON ALL STAGES IN SCHEMA <DB>.BACKEND TO ROLE <DB>_SVC;
+GRANT SELECT ON ALL VIEWS IN SCHEMA <DB>.BACKEND TO ROLE <DB>_READER;
+```
+
+### The Seed role was dropped
+
+`doctor` fails with the same `390186`. This is the worst case: every grant the role issued is gone, and everything it owned
+now belongs to the role that dropped it. It affects every Install in the account, so repeat the per-Install steps for each.
+If you run a service user, also transfer it with `GRANT OWNERSHIP ON USER <DB>_SERVICE`, a step the drill did not include.
+As `ACCOUNTADMIN`:
+
+```sql
+CREATE ROLE SNOWSTATE_SEED;
+GRANT CREATE WAREHOUSE, CREATE DATABASE, CREATE ROLE, CREATE USER, MANAGE GRANTS ON ACCOUNT TO ROLE SNOWSTATE_SEED;
+GRANT ROLE SNOWSTATE_SEED TO ROLE SYSADMIN;
+GRANT ROLE SNOWSTATE_SEED TO USER SNOWSTATE_SEED;
+
+GRANT OWNERSHIP ON DATABASE <DB> TO ROLE SNOWSTATE_SEED COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA <DB>.BACKEND TO ROLE SNOWSTATE_SEED COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON WAREHOUSE <DB>_WH TO ROLE SNOWSTATE_SEED COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON ROLE <DB>_ADMIN TO ROLE SNOWSTATE_SEED COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON ROLE <DB>_SVC TO ROLE SNOWSTATE_SEED COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON ROLE <DB>_READER TO ROLE SNOWSTATE_SEED COPY CURRENT GRANTS;
+```
+
+Then, as the Seed role, rebuild the path to the state:
+
+```sql
+GRANT ROLE <DB>_SVC TO ROLE <DB>_ADMIN;
+GRANT ROLE <DB>_ADMIN TO ROLE SNOWSTATE_SEED;
+GRANT ROLE <DB>_ADMIN TO USER SNOWSTATE_SEED;
+GRANT USAGE ON WAREHOUSE <DB>_WH TO ROLE <DB>_ADMIN;
+GRANT USAGE ON DATABASE <DB> TO ROLE <DB>_ADMIN;
+GRANT USAGE ON SCHEMA <DB>.BACKEND TO ROLE <DB>_ADMIN;
+```
+
+Finish as you do for a dropped admin role: apply as `<DB>_ADMIN`, then run the existing-object grants as the Seed role.
+
+### Disabling the Seed user
+
+Normal stacks don't use `SNOWSTATE_SEED`, so you can keep it disabled between Foundation changes. It logs in nowhere while
+disabled, so re-enable it before any change to the Foundation's state, and before any procedure above. As `ACCOUNTADMIN`:
+
+```sql
+ALTER USER SNOWSTATE_SEED SET DISABLED = TRUE;
+ALTER USER SNOWSTATE_SEED SET DISABLED = FALSE;
+```
+
+## Removing an Install
+
+**This drops the database, so every state in the Install goes with it.** There is no `snowstate` command for this, on
+purpose. `terraform destroy` with state in snowstate would drop the database holding its own state partway through, so move
+the state out first. In the Foundation directory, with the settings loaded:
+
+```bash
+mv backend.tf backend.tf.disabled
+snowstate exec -- terraform init -migrate-state
+```
+
+Delete the two `prevent_destroy` lifecycle blocks in `main.tf`, then:
+
+```bash
+terraform destroy
+rm terraform.tfstate terraform.tfstate.backup
+```
+
+Nothing from the Install is left behind. The Seed stays, because other Installs in the account may use it.
