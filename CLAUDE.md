@@ -10,3 +10,17 @@ A Terraform/OpenTofu `http` state backend that stores state in Snowflake.
 - Don't stop to ask questions. Choose the safest reasonable behaviour, document it, and continue.
 - Never log state bodies, tokens, passwords or `Authorization` headers.
 - Before each commit, run `make lint test` (and `make e2e` from M1 onward).
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues on `thunter/snowstate`, using the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default labels are used as they are: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human` and `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root, with existing decisions in `docs/decisions.md`. See `docs/agents/domain.md`.
