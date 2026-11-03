@@ -123,7 +123,8 @@ The Foundation's state lives in the Install it describes, so Terraform can only 
 again. Each procedure below was run on a real Install. `<DB>` is the database name, and the examples use the derived role
 names and the `BACKEND` schema, so substitute any you overrode.
 
-During an outage you can't read `terraform output`, because that needs the state. Set the values by hand instead:
+During an outage you can't read `terraform output`, because that needs the state. `snowstate install` saves the values in
+`snowstate.env` in the Foundation directory, so `source snowstate.env`. Otherwise, set them by hand:
 
 ```bash
 export SNOWSTATE_SNOWFLAKE__ACCOUNT=<org>-<account>

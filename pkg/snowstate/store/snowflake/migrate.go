@@ -290,6 +290,8 @@ func (s *Store) SchemaVersion(ctx context.Context) (applied, latest int, err err
 // Session describes the current Snowflake session.
 type Session struct {
 	User, Role, Warehouse, Database, Schema string
+	// SecondaryRoles is CURRENT_SECONDARY_ROLES(), a JSON object.
+	SecondaryRoles string
 }
 
 func (s Session) String() string {
@@ -301,13 +303,13 @@ func (s *Store) Session(ctx context.Context) (Session, error) {
 	var out Session
 	rows, err := s.query(ctx, s.db, "session",
 		`SELECT COALESCE(CURRENT_USER(), ''), COALESCE(CURRENT_ROLE(), ''), COALESCE(CURRENT_WAREHOUSE(), ''),
-		COALESCE(CURRENT_DATABASE(), ''), COALESCE(CURRENT_SCHEMA(), '')`)
+		COALESCE(CURRENT_DATABASE(), ''), COALESCE(CURRENT_SCHEMA(), ''), COALESCE(CURRENT_SECONDARY_ROLES(), '')`)
 	if err != nil {
 		return out, classify(err)
 	}
 	defer func() { _ = rows.Close() }()
 	if rows.Next() {
-		if err := rows.Scan(&out.User, &out.Role, &out.Warehouse, &out.Database, &out.Schema); err != nil {
+		if err := rows.Scan(&out.User, &out.Role, &out.Warehouse, &out.Database, &out.Schema, &out.SecondaryRoles); err != nil {
 			return out, classify(err)
 		}
 	}

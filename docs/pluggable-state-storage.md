@@ -54,8 +54,8 @@ terraform {
     provider "snowstate" {                 # provider config lives INSIDE the block
       account   = "myorg-myaccount"
       user      = "TF_STATE_SVC"
-      role      = "SNOWSTATE_SVC"
-      warehouse = "SNOWSTATE_WH"
+      role      = "TF_STATE_SVC"
+      warehouse = "TF_STATE_WH"
       # auth via key pair / PAT, typically from env
     }
 

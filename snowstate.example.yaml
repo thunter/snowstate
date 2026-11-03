@@ -25,8 +25,8 @@ auth:
 snowflake:
   account: ""                  # orgname-accountname
   user: ""
-  role: SNOWSTATE_SVC
-  warehouse: SNOWSTATE_WH
+  role: TF_STATE_SVC           # <database>_SVC, from the Foundation
+  warehouse: TF_STATE_WH       # <database>_WH
   database: TF_STATE
   schema: BACKEND
   auth: keypair                # keypair | pat | oauth | externalbrowser | password | workload_identity

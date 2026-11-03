@@ -502,7 +502,7 @@ Use `database/sql` transactions with gosnowflake (it supports multi-statement tr
 ```
 snowstate serve      [--config file] [flags]        # server mode
 snowstate exec       [--config file] -- <cmd> [args] # sidecar mode
-snowstate seed       --public-key-file path          # print the Seed SQL, never run it (§8.5)
+snowstate seed       --public-key-file file          # print the Seed SQL, never run it (§8.5)
 snowstate install    --database name [--dir path] [--auto-approve] [--binary terraform|tofu]   # create or update an Install (§8.5)
 snowstate migrate    [--dry-run]                     # create/upgrade schema
 snowstate doctor                                     # connectivity, grants, hybrid support, warehouse, round-trip test
@@ -563,14 +563,14 @@ GitHub Actions is a first-class target. The recommended pattern is **sidecar mod
 -- One service user per repo+environment (or per repo, using a customised `sub` claim)
 CREATE USER GH_PLATFORM_NETWORK_PROD
   TYPE = SERVICE
-  DEFAULT_ROLE = SNOWSTATE_P_PLATFORM          -- project role (§5.3) or <DB>_SVC (shared tenancy, §10)
+  DEFAULT_ROLE = <DB>_P_PLATFORM          -- project role (§5.3) or <DB>_SVC (shared tenancy, §10)
   DEFAULT_WAREHOUSE = <DB>_WH
   WORKLOAD_IDENTITY = (
     TYPE    = OIDC
     ISSUER  = 'https://token.actions.githubusercontent.com'
     SUBJECT = 'repo:<org>/<repo>:environment:prod'   -- must equal the token's `sub`
   );
-GRANT ROLE SNOWSTATE_P_PLATFORM TO USER GH_PLATFORM_NETWORK_PROD;
+GRANT ROLE <DB>_P_PLATFORM TO USER GH_PLATFORM_NETWORK_PROD;
 ```
 
 Document:

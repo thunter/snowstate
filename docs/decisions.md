@@ -431,3 +431,61 @@ from a healthy Install, because a first attempt starting from a broken one hid a
 **D70. Teardown leaves the Seed in place (reads §14 M8 narrowly).** "Teardown leaves nothing behind" means nothing from
 the Install: on a real account, 21 resources were destroyed and no `TF_STATE_TEST` objects remained, in each of three
 runs. The Seed is per account, and other Installs may use it.
+
+**D71. `snowstate seed` accepts one RSA public key in SubjectPublicKeyInfo form, and the shipped files live in a
+`deploy` Go package.** Snowflake key-pair auth only takes RSA, so any other key is refused up front rather than at
+login, and a PKCS#1 `RSA PUBLIC KEY` gets a pointer to `openssl rsa -pubout`. A file with more than one PEM block is
+refused, so a public key followed by a private one can't slip through. Errors never include the file's contents.
+`go:embed` can't reach parent directories, so `deploy/embed.go` embeds `seed.sql` from beside it, and the Foundation
+will join it in #12, which is why §3.1 has no separate entry for it.
+
+**D72. `install` asks for approval itself, then applies the saved plan.** Rather than depend on how Terraform's and
+OpenTofu's own prompts exit when declined, which wasn't checked, `install` runs `plan -out`, asks for `yes`, and applies
+exactly that plan. Only the question is `install`'s: the plan and the apply are Terraform's.
+
+**D73. `install` writes `terraform.tfvars` if it is missing, and runs Terraform with `-chdir`.** The file makes every
+later step runnable by hand, and an existing one is the operator's and is left alone. `-chdir` works the same in
+Terraform and OpenTofu, and lets the sidecar, which has no working directory option, run Terraform in the Foundation
+directory.
+
+**D74. `doctor` warns on secondary roles rather than failing.** People often log in with them on deliberately, so
+failing would block normal use. The warning names the extra roles, and says `doctor` can't prove the configured role
+alone (D66). `install` doesn't treat it as a failure either, because its Seed user has secondary roles off.
+
+**D75. `install` needs key-pair auth and an unencrypted Seed key for now, and always runs as `SNOWSTATE_SEED`.** The
+Foundation's provider block logs in with the Seed key and can't take a passphrase, so both are checked before anything
+runs. The user is pinned rather than read from the settings, so `migrate`, `doctor` and the move can't run as someone
+other than the user Terraform uses. A relative key path is made absolute, because Terraform runs in the Foundation
+directory. `install` takes the account and key from the normal snowstate settings, so a later change can pass another
+login method through without changing the engine.
+
+**D76. `install` checks the moved state, and its integration test needs a Seed key (deviates from #12 and §8.5).** After
+the move, a plan through snowstate must show no changes before the local copy is deleted, which goes beyond "remove the
+local state file" but is the cheapest proof the move worked. A failed move puts the backend block back to disabled, so
+running again is safe. The install test needs `SNOWSTATE_IT_SEED_PRIVATE_KEY_PATH` on top of `SNOWSTATE_IT_*`, because
+the Seed is a separate user, and skips itself without it. #12 also stopped a second run; #13 replaced that with re-runs
+(D77).
+
+**D77. A re-run works out where it is from Terraform and the directory, not from a record of its own.** An enabled
+backend means the state has moved, so it plans and applies through snowstate. Otherwise a plan with no changes means an
+earlier run applied, so nothing is applied twice. `migrate` is already safe to repeat, and `doctor` is repeated on
+purpose, because it only checks. "Repeats nothing that finished" in #13 is read as repeating no changes. Local state
+alongside an enabled backend means the move may not have finished, and `install` stops rather than guess, because
+`-force-copy` could overwrite state in snowstate. On a real account, `-migrate-state` left `terraform.tfstate` empty and
+the state in `terraform.tfstate.backup` (VERIFY outcome), which is what tells an unfinished move apart. If an earlier
+run moved the state but couldn't check it, a re-run must get a plan through snowstate with no changes before it deletes
+the backup.
+
+**D78. `install` saves its settings in `snowstate.env`.** A re-run after the move needs the runtime role before it can
+read any output, because the outputs live in the state it is about to read. The file holds names and a key path only,
+and is also what the runbook points at during an outage. Without it, the names derive from `--database`. Differences are
+shown with a small line diff in the binary, rather than calling `diff`, which Windows doesn't have. Values are
+shell-quoted, so `source` works with spaces in a path. `install` rewrites the file on every run. Because a re-run
+connects with the saved names, a change that renames the runtime role or the warehouse must be run by hand.
+
+**D79. The moved `schema_per_project` and GitHub setup is adapted, not copied (deviates from D62).** Its SQL now runs as
+the Seed role rather than `SECURITYADMIN`, uses `<DB>_` names, gives `<DB>_ADMIN` `CREATE SCHEMA` on the database, which
+`project create` needs and the Foundation doesn't grant, and turns secondary roles off on the GitHub users (D66). None
+of it has been run, which the operator guide says. The `migrate` hint only fires on `003001`, a missing privilege, not
+on `002003`, which Snowflake also uses for a missing object, and it covers an admin role that is short of a grant, such
+as `CREATE HYBRID TABLE` (D64).

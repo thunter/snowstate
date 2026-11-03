@@ -169,8 +169,8 @@ func Defaults() Config {
 		},
 		Auth: Auth{Mode: "token", PepperEnv: "SNOWSTATE_TOKEN_PEPPER", FailedPerMinute: 10},
 		Snowflake: Snowflake{ //nolint:gosec // env var names, not credentials
-			Role:                   "SNOWSTATE_SVC",
-			Warehouse:              "SNOWSTATE_WH",
+			Role:                   "TF_STATE_SVC",
+			Warehouse:              "TF_STATE_WH",
 			Database:               "TF_STATE",
 			Schema:                 "BACKEND",
 			Auth:                   "keypair",

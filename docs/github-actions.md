@@ -5,19 +5,21 @@ Snowflake secret. Each job gets a short-lived OIDC token from GitHub and logs in
 
 ## Snowflake setup
 
-Create one service user per repository and environment. `deploy/snowflake/bootstrap.sql` part C has the full version:
+Create one service user per repository and environment. The operator guide has the full version, which is unverified
+and not in the Foundation yet:
 
 ```sql
 CREATE USER GH_PLATFORM_NETWORK_PROD
   TYPE = SERVICE
-  DEFAULT_ROLE = SNOWSTATE_P_PLATFORM          -- project role, or SNOWSTATE_SVC for shared tenancy
-  DEFAULT_WAREHOUSE = SNOWSTATE_WH
+  DEFAULT_ROLE = <DB>_P_PLATFORM          -- project role, or <DB>_SVC for shared tenancy
+  DEFAULT_WAREHOUSE = <DB>_WH
+  DEFAULT_SECONDARY_ROLES = ()
   WORKLOAD_IDENTITY = (
     TYPE    = OIDC
     ISSUER  = 'https://token.actions.githubusercontent.com'
     SUBJECT = 'repo:<org>/<repo>:environment:prod'
   );
-GRANT ROLE SNOWSTATE_P_PLATFORM TO USER GH_PLATFORM_NETWORK_PROD;
+GRANT ROLE <DB>_P_PLATFORM TO USER GH_PLATFORM_NETWORK_PROD;
 ```
 
 `SUBJECT` must equal the token's `sub` claim exactly:
@@ -40,7 +42,7 @@ be used by anything that runs on that branch.
 `terraform plan` takes a lock but never writes state, so plan jobs get a weaker role. Create both at once:
 
 ```bash
-snowstate project create platform --role SNOWSTATE_P_PLATFORM --plan-role SNOWSTATE_P_PLATFORM_PLAN
+snowstate project create platform --role <DB>_P_PLATFORM --plan-role <DB>_P_PLATFORM_PLAN
 ```
 
 The plan role gets `SELECT` on the tables, `INSERT, DELETE` on `LOCKS` and `INSERT` on `AUDIT_LOG`, with no write on

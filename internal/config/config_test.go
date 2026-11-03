@@ -20,6 +20,10 @@ func TestDefaultsMatchSpec(t *testing.T) {
 	assert.Equal(t, 30*time.Second, c.Snowflake.LockTimeout)
 	assert.True(t, c.Locking.AllowForceUnlock)
 	assert.True(t, c.Audit.LogReads)
+	// A default Install's runtime role and warehouse (D60).
+	assert.Equal(t, "TF_STATE_SVC", c.Snowflake.Role)
+	assert.Equal(t, "TF_STATE_WH", c.Snowflake.Warehouse)
+	assert.Equal(t, "TF_STATE", c.Snowflake.Database)
 }
 
 func TestPrecedenceFlagsOverEnvOverFile(t *testing.T) {

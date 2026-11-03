@@ -6,6 +6,8 @@ Every `snowstate` command and flag. Configuration keys are covered in full in `s
 |---|---|
 | [`serve`](#snowstate-serve) | Run the shared HTTP state backend |
 | [`exec`](#snowstate-exec) | Run a command with a temporary local backend (sidecar mode) |
+| [`seed`](#snowstate-seed) | Print the Seed SQL for an admin to run |
+| [`install`](#snowstate-install) | Create an Install, from Terraform to its state in snowstate |
 | [`migrate`](#snowstate-migrate) | Create or upgrade the Snowflake schema |
 | [`doctor`](#snowstate-doctor) | Check connectivity, grants and setup |
 | [`token create`](#snowstate-token-create), [`list`](#snowstate-token-list), [`revoke`](#snowstate-token-revoke) | Manage API tokens |
@@ -37,10 +39,10 @@ Settings are applied in this order, with later ones winning:
 3. `SNOWSTATE_*` environment variables, with `__` for nesting
 4. Command-line flags
 
-For example, `SNOWSTATE_SNOWFLAKE__ROLE=SNOWSTATE_ADMIN` sets `snowflake.role`. You can set a value for one command:
+For example, `SNOWSTATE_SNOWFLAKE__ROLE=TF_STATE_ADMIN` sets `snowflake.role`. You can set a value for one command:
 
 ```bash
-SNOWSTATE_SNOWFLAKE__ROLE=SNOWSTATE_ADMIN snowstate migrate
+SNOWSTATE_SNOWFLAKE__ROLE=TF_STATE_ADMIN snowstate migrate
 ```
 
 Only `serve` and `exec` have flags that change configuration. Everything else is set through the file or the environment.
@@ -57,15 +59,10 @@ These variables hold values directly rather than configuring a key:
 
 ### Which role to use
 
-`snowflake.role` defaults to `SNOWSTATE_SVC`, which has no DDL rights, so set the role when a command needs more.
+Roles are named after the Install's database, `<DB>`. `snowflake.role` defaults to `TF_STATE_SVC`, the runtime role of a
+`TF_STATE` Install, which has no DDL rights, so set the role when a command needs more.
 
-| Commands | Role |
-|---|---|
-| `migrate`, `project create` | `SNOWSTATE_ADMIN` |
-| `gc`, `token create`, `token revoke` | `SNOWSTATE_ADMIN` |
-| `serve` | `SNOWSTATE_SVC` |
-| `exec` | Your own role, which must be able to reach the state tables |
-| `doctor`, `state *`, `lock *`, `token list`, `project list` | Any role with access to the tables they read or change |
+The operator guide lists the role each command needs, under "Which role each command needs".
 
 Admin commands talk to Snowflake directly, not through a running server.
 
@@ -207,10 +204,94 @@ Check for a partial apply, then release it with:
   snowstate lock release platform/network/prod
 ```
 
+## snowstate seed
+
+Prints the SQL for the Seed: the `SNOWSTATE_SEED` role and user that Terraform starts from, with your public key filled in.
+An admin runs it once per account, as `ACCOUNTADMIN`. New Installs don't need it again.
+
+It never connects to Snowflake and needs no configuration, so the person running it doesn't need the admin's credentials.
+It refuses a private key without printing any of it, and only accepts an RSA public key, which Snowflake key-pair auth needs.
+
+```text
+snowstate seed --public-key-file <file>
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--public-key-file <file>` | Yes | PEM public key for the `SNOWSTATE_SEED` user, as written by `openssl rsa -pubout`. |
+
+```bash
+openssl genrsa 2048 | openssl pkcs8 -topk8 -nocrypt -out ~/.snowflake/keys/snowstate_seed.p8
+openssl rsa -in ~/.snowflake/keys/snowstate_seed.p8 -pubout -out snowstate_seed.pub
+snowstate seed --public-key-file snowstate_seed.pub > seed.sql
+```
+
+```text
+$ snowstate seed --public-key-file ~/.snowflake/keys/snowstate_seed.p8
+error: /Users/me/.snowflake/keys/snowstate_seed.p8: this is a private key: pass the public key, from openssl rsa -in <key> -pubout
+```
+
+## snowstate install
+
+Creates an Install. It runs the real Terraform or OpenTofu, never a reimplementation, and each step below can also be run by
+hand, as `deploy/terraform/foundation/README.md` shows.
+
+1. Writes the Foundation's Terraform code, embedded in the binary, to `--dir`, plus a `terraform.tfvars`. A file already
+   there must match, so your code is never overwritten: if one differs, `install` stops and shows the difference.
+2. Runs `init` and `plan`, shows the plan, and applies it only once you type `yes`, unless you pass `--auto-approve`. A
+   plan with no changes skips the apply.
+3. Runs `migrate` as `<DB>_ADMIN`, then `doctor` as `<DB>_SVC`, which proves the runtime role's grants.
+4. Only once `doctor` passes, moves the Foundation's own state into snowstate under `snowstate/foundation/default`, checks
+   that a plan through snowstate shows no changes, and removes the local state files.
+
+**Running it again is safe at any point.** Before the move, it carries on from where it stopped, and a plan with no changes
+means an earlier run already applied. After the move, it plans and applies through snowstate, so it is also how you make a
+later Foundation change: edit `terraform.tfvars` and run `install` again. It saves the settings for snowstate commands in
+`snowstate.env` in the directory, so you can `source` it, and you don't need `terraform output` during an outage.
+
+Only the files `install` ships are compared. `backend.tf` counts as its disabled form, and files such as `terraform.tfvars`
+and `.terraform.lock.hcl` are yours. `install` rewrites `snowstate.env` on every run, so don't edit it. If a change renames
+the runtime role or warehouse, run that change by hand, as the names in `snowstate.env` are the old ones until it finishes.
+
+It logs in as `SNOWSTATE_SEED`, which [`seed`](#snowstate-seed) creates, so configure the account and the Seed key. It sets
+the role, warehouse, database and schema itself for each step, from the Foundation's outputs. A failed step says which step
+failed and what to do next, and a missing binary fails before anything changes.
+
+```text
+snowstate install --database <name> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--database <name>` | required | Database for the Install. Account-level names derive from it, such as `<name>_ADMIN`. |
+| `--dir <path>` | `snowstate-foundation` | Directory for the Terraform code. Keep it, and commit it if you like. |
+| `--binary <name>` | `terraform` | Terraform or OpenTofu binary, such as `tofu`. |
+| `--auto-approve` | off | Apply the plan without asking. |
+| `--write-only` | off | Write the Terraform code and `terraform.tfvars`, then stop. Nothing runs, and Snowflake isn't contacted. |
+
+```bash
+export SNOWSTATE_SNOWFLAKE__ACCOUNT=myorg-myaccount
+export SNOWSTATE_SNOWFLAKE__PRIVATE_KEY_PATH=~/.snowflake/keys/snowstate_seed.p8
+snowstate install --database TF_STATE
+```
+
+```text
+==> write the Foundation to snowstate-foundation
+==> terraform init
+==> terraform plan
+...
+Apply this plan? Only 'yes' will be accepted: yes
+==> terraform apply
+==> migrate as TF_STATE_ADMIN
+==> doctor as TF_STATE_SVC
+==> move the state into snowstate
+==> done: the Foundation's state is in snowstate under snowstate/foundation/default
+```
+
 ## snowstate migrate
 
 Creates or upgrades the Snowflake objects: the schema if it is missing, then tables, stage and views. It is safe to run
-repeatedly, and it only moves forward. Run it as `SNOWSTATE_ADMIN`.
+repeatedly, and it only moves forward. Run it as `<DB>_ADMIN`. If the role can't create objects, the error says so.
 
 It also tests for hybrid tables. In `hybrid` locking mode it stops with guidance if they are unavailable. With
 `tenancy.mode=schema_per_project`, it upgrades `CONTROL` and every project schema.
@@ -225,7 +306,7 @@ snowstate migrate [flags]
 
 ```bash
 snowstate migrate --dry-run
-SNOWSTATE_SNOWFLAKE__ROLE=SNOWSTATE_ADMIN snowstate migrate
+SNOWSTATE_SNOWFLAKE__ROLE=TF_STATE_ADMIN snowstate migrate
 ```
 
 ```text
@@ -485,7 +566,7 @@ If nothing is held, it prints `no lock held on <key>` and exits `0`.
 ## snowstate project create
 
 Creates a project's schema in `schema_per_project` tenancy, applies the migrations, grants the roles, records the project
-and rebuilds the cross-project inventory view. Run it as `SNOWSTATE_ADMIN`. The roles must already exist.
+and rebuilds the cross-project inventory view. Run it as `<DB>_ADMIN`. The roles must already exist.
 
 The schema is `P_<PROJECT>`, upper-cased, with anything non-alphanumeric changed to `_`. A name that would land on another
 project's schema is refused: `my-app` and `my_app` cannot both exist. It fails unless `tenancy.mode` is `schema_per_project`.
@@ -503,8 +584,8 @@ snowstate project create <name> --role <role> [flags]
 No permission set can update or delete `STATE_VERSIONS` or `AUDIT_LOG`, so project roles cannot erase history.
 
 ```bash
-snowstate project create platform --role SNOWSTATE_P_PLATFORM \
-  --plan-role SNOWSTATE_P_PLATFORM_PLAN
+snowstate project create platform --role TF_STATE_P_PLATFORM \
+  --plan-role TF_STATE_P_PLATFORM_PLAN
 ```
 
 ```text
@@ -522,8 +603,8 @@ snowstate project list
 It has no flags of its own.
 
 ```text
-PROJECT   SCHEMA      ROLE                  PLAN_ROLE                  PERMISSIONS
-platform  P_PLATFORM  SNOWSTATE_P_PLATFORM  SNOWSTATE_P_PLATFORM_PLAN  read,write,lock
+PROJECT   SCHEMA      ROLE                 PLAN_ROLE                 PERMISSIONS
+platform  P_PLATFORM  TF_STATE_P_PLATFORM  TF_STATE_P_PLATFORM_PLAN  read,write,lock
 ```
 
 ## snowstate gc
