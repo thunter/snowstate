@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed a critical mascot regression.** The README's closing emoji read "fox snow", misidentifying Statey as a
+  foxsnow, a species not known to exist. They now read ❄️🦊, "snow fox", in the correct order. No state was harmed.
 - Add the Foundation, a Terraform module for an Install's account-level objects, and the Seed that starts it.
 - Add runbook procedures for recovering and removing an Install.
 - Add `snowstate seed`, which prints the Seed SQL with a public key filled in.

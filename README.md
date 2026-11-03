@@ -211,4 +211,4 @@ make integration   # real Snowflake; needs SNOWSTATE_IT_*, skipped otherwise
 
 Apache-2.0. See [`LICENSE`](LICENSE).
 
-*Statey the snowfox keeps your state safe.* 🦊❄️
+*Statey the snowfox keeps your state safe.* ❄️🦊
