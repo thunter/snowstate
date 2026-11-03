@@ -1,6 +1,7 @@
 package install
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -29,27 +30,39 @@ var _ Runner = (*Exec)(nil)
 func (e *Exec) LookPath(name string) (string, error) { return exec.LookPath(name) }
 
 // Terraform runs the binary in dir with local state.
-func (e *Exec) Terraform(ctx context.Context, dir string, args ...string) error {
+func (e *Exec) Terraform(ctx context.Context, dir string, args ...string) (int, error) {
 	cmd := exec.CommandContext(ctx, e.Binary, append([]string{"-chdir=" + dir}, args...)...) //nolint:gosec // running the operator's Terraform is the feature
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = e.Stdin, e.Stdout, e.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s %s: %w", e.Binary, args[0], err)
+	err := cmd.Run()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode(), nil
 	}
-	return nil
+	if err != nil {
+		return 0, fmt.Errorf("%s %s: %w", e.Binary, args[0], err)
+	}
+	return 0, nil
 }
 
-// Outputs reads the Foundation's names from local state.
-func (e *Exec) Outputs(ctx context.Context, dir string) (Outputs, error) {
-	cmd := exec.CommandContext(ctx, e.Binary, "-chdir="+dir, "output", "-json") //nolint:gosec // running the operator's Terraform is the feature
-	cmd.Stderr = e.Stderr
-	raw, err := cmd.Output()
-	if err != nil {
-		return Outputs{}, fmt.Errorf("%s output: %w", e.Binary, err)
+// Outputs reads the Foundation's names, from local state when cfg is nil and
+// through snowstate otherwise.
+func (e *Exec) Outputs(ctx context.Context, cfg *config.Config, dir string) (Outputs, error) {
+	var raw bytes.Buffer
+	if cfg == nil {
+		cmd := exec.CommandContext(ctx, e.Binary, "-chdir="+dir, "output", "-json") //nolint:gosec // running the operator's Terraform is the feature
+		cmd.Stdout, cmd.Stderr = &raw, e.Stderr
+		if err := cmd.Run(); err != nil {
+			return Outputs{}, fmt.Errorf("%s output: %w", e.Binary, err)
+		}
+	} else {
+		if err := exitErr(e.sidecar(ctx, cfg, StateKey, dir, &raw, "output", "-json")); err != nil {
+			return Outputs{}, fmt.Errorf("%s output: %w", e.Binary, err)
+		}
 	}
 	var values map[string]struct {
 		Value any `json:"value"`
 	}
-	if err := json.Unmarshal(raw, &values); err != nil {
+	if err := json.Unmarshal(raw.Bytes(), &values); err != nil {
 		return Outputs{}, fmt.Errorf("%s output: %w", e.Binary, err)
 	}
 	text := func(name string) string { s, _ := values[name].Value.(string); return s }
@@ -92,19 +105,14 @@ func (e *Exec) Doctor(ctx context.Context, cfg *config.Config) error {
 }
 
 // Sidecar runs the binary in dir through snowstate exec.
-func (e *Exec) Sidecar(ctx context.Context, cfg *config.Config, key, dir string, args ...string) error {
-	code, err := sidecar.Run(ctx, sidecar.Options{
+func (e *Exec) Sidecar(ctx context.Context, cfg *config.Config, key, dir string, args ...string) (int, error) {
+	return e.sidecar(ctx, cfg, key, dir, e.Stdout, args...)
+}
+
+func (e *Exec) sidecar(ctx context.Context, cfg *config.Config, key, dir string, stdout io.Writer, args ...string) (int, error) {
+	return sidecar.Run(ctx, sidecar.Options{
 		Config: cfg, Key: key, Args: append([]string{e.Binary, "-chdir=" + dir}, args...),
 		ShutdownGrace: sidecar.DefaultShutdownGrace, Logger: e.Logger,
-		Stdin: e.Stdin, Stdout: e.Stdout, Stderr: e.Stderr,
+		Stdin: e.Stdin, Stdout: stdout, Stderr: e.Stderr,
 	})
-	switch {
-	case err != nil:
-		return err
-	case code == 2 && args[0] == "plan":
-		return errors.New("the plan shows changes")
-	case code != 0:
-		return fmt.Errorf("%s %s exited with %d", e.Binary, args[0], code)
-	}
-	return nil
 }

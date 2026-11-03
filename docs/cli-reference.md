@@ -242,11 +242,21 @@ Creates an Install. It runs the real Terraform or OpenTofu, never a reimplementa
 hand, as `deploy/terraform/foundation/README.md` shows.
 
 1. Writes the Foundation's Terraform code, embedded in the binary, to `--dir`, plus a `terraform.tfvars`. A file already
-   there must match, so your code is never overwritten.
-2. Runs `init` and `plan`, shows the plan, and applies it only once you type `yes`, unless you pass `--auto-approve`.
+   there must match, so your code is never overwritten: if one differs, `install` stops and shows the difference.
+2. Runs `init` and `plan`, shows the plan, and applies it only once you type `yes`, unless you pass `--auto-approve`. A
+   plan with no changes skips the apply.
 3. Runs `migrate` as `<DB>_ADMIN`, then `doctor` as `<DB>_SVC`, which proves the runtime role's grants.
 4. Only once `doctor` passes, moves the Foundation's own state into snowstate under `snowstate/foundation/default`, checks
    that a plan through snowstate shows no changes, and removes the local state files.
+
+**Running it again is safe at any point.** Before the move, it carries on from where it stopped, and a plan with no changes
+means an earlier run already applied. After the move, it plans and applies through snowstate, so it is also how you make a
+later Foundation change: edit `terraform.tfvars` and run `install` again. It saves the settings for snowstate commands in
+`snowstate.env` in the directory, so you can `source` it, and you don't need `terraform output` during an outage.
+
+Only the files `install` ships are compared. `backend.tf` counts as its disabled form, and files such as `terraform.tfvars`
+and `.terraform.lock.hcl` are yours. `install` rewrites `snowstate.env` on every run, so don't edit it. If a change renames
+the runtime role or warehouse, run that change by hand, as the names in `snowstate.env` are the old ones until it finishes.
 
 It logs in as `SNOWSTATE_SEED`, which [`seed`](#snowstate-seed) creates, so configure the account and the Seed key. It sets
 the role, warehouse, database and schema itself for each step, from the Foundation's outputs. A failed step says which step

@@ -7,6 +7,7 @@
 - Add `snowstate seed`, which prints the Seed SQL with a public key filled in.
 - Add `snowstate install`, which creates an Install with the real Terraform or OpenTofu and moves its state into snowstate.
 - `snowstate doctor` warns when secondary roles mean it can't prove the configured role's grants.
+- `snowstate install` is safe to run again: it resumes where it stopped, applies later Foundation changes through snowstate, and shows any difference from the shipped code.
 
 ## 0.1.0 - 2026-11-01
 

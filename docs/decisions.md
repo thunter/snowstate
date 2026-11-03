@@ -459,9 +459,26 @@ other than the user Terraform uses. A relative key path is made absolute, becaus
 directory. `install` takes the account and key from the normal snowstate settings, so a later change can pass another
 login method through without changing the engine.
 
-**D76. `install` checks the moved state, refuses to run twice, and its integration test needs a Seed key (deviates from
-#12 and §8.5).** After the move, a plan through snowstate must show no changes before the local copy is deleted, which
-goes beyond "remove the local state file" but is the cheapest proof the move worked. Until #13 adds re-runs, a directory
-whose backend is already enabled stops `install` straight away, and a failed move puts the backend block back to
-disabled, so running again is safe. The install test needs `SNOWSTATE_IT_SEED_PRIVATE_KEY_PATH` on top of
-`SNOWSTATE_IT_*`, because the Seed is a separate user, and skips itself without it.
+**D76. `install` checks the moved state, and its integration test needs a Seed key (deviates from #12 and §8.5).** After
+the move, a plan through snowstate must show no changes before the local copy is deleted, which goes beyond "remove the
+local state file" but is the cheapest proof the move worked. A failed move puts the backend block back to disabled, so
+running again is safe. The install test needs `SNOWSTATE_IT_SEED_PRIVATE_KEY_PATH` on top of `SNOWSTATE_IT_*`, because
+the Seed is a separate user, and skips itself without it. #12 also stopped a second run; #13 replaced that with re-runs
+(D77).
+
+**D77. A re-run works out where it is from Terraform and the directory, not from a record of its own.** An enabled
+backend means the state has moved, so it plans and applies through snowstate. Otherwise a plan with no changes means an
+earlier run applied, so nothing is applied twice. `migrate` is already safe to repeat, and `doctor` is repeated on
+purpose, because it only checks. "Repeats nothing that finished" in #13 is read as repeating no changes. Local state
+alongside an enabled backend means the move may not have finished, and `install` stops rather than guess, because
+`-force-copy` could overwrite state in snowstate. On a real account, `-migrate-state` left `terraform.tfstate` empty and
+the state in `terraform.tfstate.backup` (VERIFY outcome), which is what tells an unfinished move apart. If an earlier
+run moved the state but couldn't check it, a re-run must get a plan through snowstate with no changes before it deletes
+the backup.
+
+**D78. `install` saves its settings in `snowstate.env`.** A re-run after the move needs the runtime role before it can
+read any output, because the outputs live in the state it is about to read. The file holds names and a key path only,
+and is also what the runbook points at during an outage. Without it, the names derive from `--database`. Differences are
+shown with a small line diff in the binary, rather than calling `diff`, which Windows doesn't have. Values are
+shell-quoted, so `source` works with spaces in a path. `install` rewrites the file on every run. Because a re-run
+connects with the saved names, a change that renames the runtime role or the warehouse must be run by hand.

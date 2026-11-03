@@ -3,7 +3,7 @@
 The Foundation is the account-level part of an Install: its warehouse, database, schema, roles and grants. `snowstate migrate`
 owns everything inside the schema.
 
-These are the manual steps, so you can run or finish an Install by hand. Run `terraform` or `tofu`, whichever you use.
+`snowstate install` runs all of these for you. These are the manual steps, so you can run or finish an Install by hand. Run `terraform` or `tofu`, whichever you use.
 
 **1. Seed, once per account.** Generate a key pair for `SNOWSTATE_SEED`, paste the public key body into
 `deploy/snowflake/seed.sql`, and run it as `ACCOUNTADMIN`. New Installs skip this.

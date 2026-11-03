@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -20,6 +21,8 @@ type fakeRunner struct {
 	calls []string
 	fail  map[string]error // keyed by the start of a call
 	path  string
+	// remoteChanges makes a plan through snowstate show changes.
+	remoteChanges bool
 }
 
 func (f *fakeRunner) record(call string) error {
@@ -32,6 +35,10 @@ func (f *fakeRunner) record(call string) error {
 	return nil
 }
 
+// exits records a command and reports whether it should exit non-zero, as a
+// failed Terraform run does.
+func (f *fakeRunner) exits(call string) bool { return f.record(call) != nil }
+
 func (f *fakeRunner) LookPath(name string) (string, error) {
 	if f.path == "" {
 		return "", fmt.Errorf("exec: %q: executable file not found in $PATH", name)
@@ -39,21 +46,37 @@ func (f *fakeRunner) LookPath(name string) (string, error) {
 	return f.path, nil
 }
 
-func (f *fakeRunner) Terraform(_ context.Context, dir string, args ...string) error {
-	if err := f.record("terraform " + strings.Join(args, " ")); err != nil {
-		return err
+func (f *fakeRunner) Terraform(_ context.Context, dir string, args ...string) (int, error) {
+	if f.exits("terraform " + strings.Join(args, " ")) {
+		return 1, nil
 	}
 	if args[0] == "apply" {
-		return os.WriteFile(filepath.Join(dir, "terraform.tfstate"), []byte("{}"), 0o600)
+		return 0, os.WriteFile(filepath.Join(dir, "terraform.tfstate"), []byte("{}"), 0o600)
 	}
-	return nil
+	if args[0] == "plan" && hasState(dir) {
+		return 0, nil
+	}
+	if args[0] == "plan" {
+		return 2, nil // -detailed-exitcode: there are changes
+	}
+	return 0, nil
 }
 
-func (f *fakeRunner) Outputs(context.Context, string) (Outputs, error) {
+// hasState is true once an apply has written local state.
+func hasState(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, "terraform.tfstate"))
+	return err == nil && info.Size() > 0
+}
+
+func (f *fakeRunner) Outputs(_ context.Context, cfg *config.Config, _ string) (Outputs, error) {
+	call := "outputs"
+	if cfg != nil {
+		call = "outputs through snowstate " + where(cfg)
+	}
 	return Outputs{
 		Database: "TF_STATE", Schema: "BACKEND", Warehouse: "TF_STATE_WH",
 		AdminRole: "TF_STATE_ADMIN", RuntimeRole: "TF_STATE_SVC",
-	}, f.record("outputs")
+	}, f.record(call)
 }
 
 func (f *fakeRunner) Migrate(_ context.Context, cfg *config.Config) error {
@@ -64,16 +87,19 @@ func (f *fakeRunner) Doctor(_ context.Context, cfg *config.Config) error {
 	return f.record("doctor " + where(cfg))
 }
 
-func (f *fakeRunner) Sidecar(_ context.Context, cfg *config.Config, key, dir string, args ...string) error {
-	if err := f.record("snowstate exec " + where(cfg) + " key=" + key + " -- terraform " + strings.Join(args, " ")); err != nil {
-		return err
+func (f *fakeRunner) Sidecar(_ context.Context, cfg *config.Config, key, dir string, args ...string) (int, error) {
+	if f.exits("snowstate exec " + where(cfg) + " key=" + key + " -- terraform " + strings.Join(args, " ")) {
+		return 1, nil
 	}
-	if args[0] == "init" {
+	if args[0] == "plan" && f.remoteChanges {
+		return 2, nil
+	}
+	if args[0] == "init" && slices.Contains(args, "-migrate-state") {
 		// -migrate-state empties the local file and keeps a backup.
 		_ = os.WriteFile(filepath.Join(dir, "terraform.tfstate"), nil, 0o600)
-		return os.WriteFile(filepath.Join(dir, "terraform.tfstate.backup"), []byte("{}"), 0o600)
+		return 0, os.WriteFile(filepath.Join(dir, "terraform.tfstate.backup"), []byte("{}"), 0o600)
 	}
-	return nil
+	return 0, nil
 }
 
 func where(cfg *config.Config) string {
@@ -112,7 +138,7 @@ func TestFirstInstallRunsEachStepWithItsRole(t *testing.T) {
 	svc := "user=SNOWSTATE_SEED role=TF_STATE_SVC wh=TF_STATE_WH db=TF_STATE schema=BACKEND"
 	require.Equal(t, []string{
 		"terraform init -input=false",
-		"terraform plan -input=false -out=foundation.tfplan",
+		"terraform plan -input=false -detailed-exitcode -out=foundation.tfplan",
 		"terraform apply -input=false foundation.tfplan",
 		"outputs",
 		"migrate " + admin,
@@ -145,7 +171,7 @@ func TestNothingIsAppliedWithoutApproval(t *testing.T) {
 
 	require.ErrorContains(t, err, "approve the plan failed: not approved, so nothing was applied")
 	require.Contains(t, out.String(), "Apply this plan? Only 'yes' will be accepted:")
-	require.Equal(t, []string{"terraform init -input=false", "terraform plan -input=false -out=foundation.tfplan"}, runner.calls)
+	require.Equal(t, []string{"terraform init -input=false", "terraform plan -input=false -detailed-exitcode -out=foundation.tfplan"}, runner.calls)
 	require.NoFileExists(t, filepath.Join(opts.Dir, "foundation.tfplan"))
 }
 
@@ -222,7 +248,7 @@ func TestAFailedStepSaysWhichStepAndWhatNext(t *testing.T) {
 
 			err := Run(context.Background(), opts, runner)
 
-			require.ErrorContains(t, err, tc.step+": boom")
+			require.ErrorContains(t, err, tc.step+": ")
 			require.ErrorContains(t, err, "next: "+tc.next)
 		})
 	}
@@ -296,17 +322,84 @@ func TestARelativeKeyPathIsMadeAbsolute(t *testing.T) {
 	require.Contains(t, string(vars), `private_key_path  = "`+filepath.Join(work, "keys", "seed.p8")+`"`)
 }
 
-func TestAFinishedInstallIsNotRunAgain(t *testing.T) {
+const svcExec = "snowstate exec user=SNOWSTATE_SEED role=TF_STATE_SVC wh=TF_STATE_WH db=TF_STATE schema=BACKEND key=snowstate/foundation/default -- terraform "
+
+func installed(t *testing.T) Options {
+	t.Helper()
 	opts, _ := newOptions(t, "yes\n")
-	require.NoError(t, os.MkdirAll(opts.Dir, 0o750))
-	require.NoError(t, os.WriteFile(filepath.Join(opts.Dir, "backend.tf"), []byte("terraform {\n  backend \"http\" {}\n}\n"), 0o600))
+	require.NoError(t, Run(context.Background(), opts, &fakeRunner{path: "/usr/bin/terraform"}))
+	return opts
+}
+
+func TestARerunOnAFinishedInstallGoesThroughSnowstate(t *testing.T) {
+	opts := installed(t)
+	var out bytes.Buffer
+	opts.Stdout, opts.Stdin = &out, strings.NewReader("")
+	runner := &fakeRunner{path: "/usr/bin/terraform"}
+
+	require.NoError(t, Run(context.Background(), opts, runner))
+
+	require.Equal(t, []string{
+		svcExec + "init -input=false",
+		svcExec + "plan -input=false -detailed-exitcode -out=foundation.tfplan",
+		"outputs through snowstate user=SNOWSTATE_SEED role=TF_STATE_SVC wh=TF_STATE_WH db=TF_STATE schema=BACKEND",
+		"migrate user=SNOWSTATE_SEED role=TF_STATE_ADMIN wh=TF_STATE_WH db=TF_STATE schema=BACKEND",
+		"doctor user=SNOWSTATE_SEED role=TF_STATE_SVC wh=TF_STATE_WH db=TF_STATE schema=BACKEND",
+	}, runner.calls)
+	require.Contains(t, out.String(), "no changes to apply")
+	require.NotContains(t, out.String(), "Apply this plan?")
+}
+
+func TestALaterChangeIsAppliedThroughSnowstateAfterApproval(t *testing.T) {
+	opts := installed(t)
+	opts.Stdin = strings.NewReader("yes\n")
+	runner := &fakeRunner{path: "/usr/bin/terraform", remoteChanges: true}
+
+	require.NoError(t, Run(context.Background(), opts, runner))
+	require.Contains(t, runner.calls, svcExec+"apply -input=false foundation.tfplan")
+	for _, call := range runner.calls {
+		require.False(t, strings.HasPrefix(call, "terraform "), "nothing runs with local state: %s", call)
+	}
+
+	opts.Stdin = strings.NewReader("no\n")
+	declined := &fakeRunner{path: "/usr/bin/terraform", remoteChanges: true}
+	require.ErrorContains(t, Run(context.Background(), opts, declined), "not approved")
+	require.NotContains(t, declined.calls, svcExec+"apply -input=false foundation.tfplan")
+}
+
+func TestARerunAfterTheMoveCheckFailedTidiesUp(t *testing.T) {
+	opts, _ := newOptions(t, "yes\n")
+	first := &fakeRunner{path: "/usr/bin/terraform", fail: map[string]error{svcExec + "plan": fmt.Errorf("boom")}}
+	require.ErrorContains(t, Run(context.Background(), opts, first), "check the moved state failed")
+	require.FileExists(t, filepath.Join(opts.Dir, "terraform.tfstate.backup"))
+
+	require.NoError(t, Run(context.Background(), opts, &fakeRunner{path: "/usr/bin/terraform"}))
+	require.NoFileExists(t, filepath.Join(opts.Dir, "terraform.tfstate"))
+	require.NoFileExists(t, filepath.Join(opts.Dir, "terraform.tfstate.backup"))
+}
+
+func TestAnInterruptedMoveStopsRatherThanGuess(t *testing.T) {
+	opts, _ := newOptions(t, "yes\n")
+	first := &fakeRunner{path: "/usr/bin/terraform", fail: map[string]error{svcExec + "init": fmt.Errorf("boom")}}
+	require.Error(t, Run(context.Background(), opts, first))
+	// As if the process died after enabling the backend, before the move.
+	require.NoError(t, os.Rename(filepath.Join(opts.Dir, "backend.tf.disabled"), filepath.Join(opts.Dir, "backend.tf")))
 	runner := &fakeRunner{path: "/usr/bin/terraform"}
 
 	err := Run(context.Background(), opts, runner)
 
-	require.ErrorContains(t, err, "already in snowstate")
+	require.ErrorContains(t, err, "local state and an enabled backend")
+	require.ErrorContains(t, err, "mv backend.tf backend.tf.disabled")
 	require.Empty(t, runner.calls)
-	require.NoFileExists(t, filepath.Join(opts.Dir, "backend.tf.disabled"))
+}
+
+func TestARerunWithoutSavedNamesUsesTheDerivedOnes(t *testing.T) {
+	opts := installed(t)
+	require.NoError(t, os.Remove(filepath.Join(opts.Dir, "snowstate.env")))
+	runner := &fakeRunner{path: "/usr/bin/terraform"}
+
+	require.NoError(t, Run(context.Background(), opts, runner))
+	require.Equal(t, svcExec+"init -input=false", runner.calls[0])
 }
 
 func TestAFailedMoveLeavesTheBackendDisabled(t *testing.T) {
@@ -329,4 +422,112 @@ func TestNothingIsWrittenWhenAFileDiffers(t *testing.T) {
 	entries, err := os.ReadDir(opts.Dir)
 	require.NoError(t, err)
 	require.Len(t, entries, 1, "only the operator's file is there")
+}
+
+func TestARerunAfterAFailureFinishesWithoutApplyingAgain(t *testing.T) {
+	svc := svcExec
+	tests := []struct{ failed string }{
+		{"terraform init"}, {"terraform plan"}, {"terraform apply"}, {"outputs"}, {"migrate"}, {"doctor"}, {svc + "init"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.failed, func(t *testing.T) {
+			opts, _ := newOptions(t, "yes\n")
+			first := &fakeRunner{path: "/usr/bin/terraform", fail: map[string]error{tc.failed: fmt.Errorf("boom")}}
+			require.Error(t, Run(context.Background(), opts, first))
+
+			opts.Stdin = strings.NewReader("yes\n")
+			second := &fakeRunner{path: "/usr/bin/terraform"}
+			require.NoError(t, Run(context.Background(), opts, second))
+
+			applied := slices.Contains([]string{"terraform init", "terraform plan", "terraform apply"}, tc.failed)
+			require.Equal(t, applied, slices.Contains(second.calls, "terraform apply -input=false foundation.tfplan"),
+				"apply on the second run only if the first never applied")
+			require.Equal(t, svc+"plan -input=false -detailed-exitcode", second.calls[len(second.calls)-1])
+			require.NoFileExists(t, filepath.Join(opts.Dir, "terraform.tfstate"))
+			require.FileExists(t, filepath.Join(opts.Dir, "backend.tf"))
+		})
+	}
+}
+
+func TestADifferenceIsShownLineByLine(t *testing.T) {
+	opts := installed(t)
+	path := filepath.Join(opts.Dir, "versions.tf")
+	src, err := os.ReadFile(path)
+	require.NoError(t, err)
+	edited := strings.Replace(string(src), `version = "~> 2.22"`, `version = "~> 2.30"`, 1)
+	require.NotEqual(t, string(src), edited)
+	require.NoError(t, os.WriteFile(path, []byte(edited), 0o600))
+
+	err = Run(context.Background(), opts, &fakeRunner{path: "/usr/bin/terraform"})
+
+	require.ErrorContains(t, err, "versions.tf differs from the embedded Foundation")
+	require.ErrorContains(t, err, `- `+`      version = "~> 2.22"`)
+	require.ErrorContains(t, err, `+ `+`      version = "~> 2.30"`)
+	have, _ := os.ReadFile(path)
+	require.Equal(t, edited, string(have))
+}
+
+func TestAnEditedBackendBlockCountsAsADifference(t *testing.T) {
+	opts := installed(t)
+	path := filepath.Join(opts.Dir, "backend.tf")
+	require.NoError(t, os.WriteFile(path, []byte("terraform {\n  backend \"s3\" {}\n}\n"), 0o600))
+
+	err := Run(context.Background(), opts, &fakeRunner{path: "/usr/bin/terraform"})
+
+	require.ErrorContains(t, err, "backend.tf differs from the embedded Foundation")
+	require.NoFileExists(t, filepath.Join(opts.Dir, "backend.tf.disabled"))
+}
+
+func TestGeneratedAndOperatorFilesAreIgnored(t *testing.T) {
+	opts := installed(t)
+	for name, body := range map[string]string{
+		".terraform.lock.hcl": "# generated\n",
+		"terraform.tfvars":    "database_name = \"TF_STATE\"\nservice_public_key = \"MII...\"\n",
+		"notes.md":            "mine\n",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(opts.Dir, name), []byte(body), 0o600))
+	}
+
+	require.NoError(t, Run(context.Background(), opts, &fakeRunner{path: "/usr/bin/terraform"}))
+}
+
+func TestALeftoverBackupIsOnlyRemovedAfterACleanPlan(t *testing.T) {
+	opts, _ := newOptions(t, "yes\n")
+	first := &fakeRunner{path: "/usr/bin/terraform", fail: map[string]error{svcExec + "plan": fmt.Errorf("boom")}}
+	require.Error(t, Run(context.Background(), opts, first))
+
+	opts.AutoApprove = true
+	runner := &fakeRunner{path: "/usr/bin/terraform", remoteChanges: true}
+	err := Run(context.Background(), opts, runner)
+
+	require.ErrorContains(t, err, "differs from the local copy")
+	require.NotContains(t, runner.calls, svcExec+"apply -input=false foundation.tfplan")
+	require.FileExists(t, filepath.Join(opts.Dir, "terraform.tfstate.backup"))
+}
+
+func TestDoctorFailingAfterTheMoveGivesAdviceForThatRoute(t *testing.T) {
+	opts := installed(t)
+	runner := &fakeRunner{path: "/usr/bin/terraform", fail: map[string]error{"doctor": fmt.Errorf("doctor found problems")}}
+
+	err := Run(context.Background(), opts, runner)
+
+	require.ErrorContains(t, err, "doctor failed")
+	require.ErrorContains(t, err, "the state is in snowstate")
+	require.NotContains(t, err.Error(), "has not moved")
+}
+
+func TestSavedSettingsCanBeSourcedWithSpacesInThePath(t *testing.T) {
+	opts, _ := newOptions(t, "yes\n")
+	opts.Config.Snowflake.PrivateKeyPath = "/keys/my keys/seed.p8"
+	require.NoError(t, Run(context.Background(), opts, &fakeRunner{path: "/usr/bin/terraform"}))
+
+	env, err := os.ReadFile(filepath.Join(opts.Dir, "snowstate.env"))
+	require.NoError(t, err)
+	require.Contains(t, string(env), "export SNOWSTATE_SNOWFLAKE__PRIVATE_KEY_PATH='/keys/my keys/seed.p8'\n")
+	require.Contains(t, string(env), "export SNOWSTATE_SNOWFLAKE__ROLE='TF_STATE_SVC'\n")
+
+	// The saved names still drive a re-run.
+	runner := &fakeRunner{path: "/usr/bin/terraform"}
+	require.NoError(t, Run(context.Background(), opts, runner))
+	require.Equal(t, svcExec+"init -input=false", runner.calls[0])
 }
