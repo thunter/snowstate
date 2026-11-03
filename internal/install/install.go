@@ -63,8 +63,11 @@ type Options struct {
 	Dir         string
 	Binary      string
 	AutoApprove bool
-	Stdin       io.Reader
-	Stdout      io.Writer
+	// WriteOnly writes the code and terraform.tfvars, then stops, so the
+	// operator can read it or run each step by hand.
+	WriteOnly bool
+	Stdin     io.Reader
+	Stdout    io.Writer
 }
 
 // StepError says which step failed and what to do next.
@@ -103,7 +106,7 @@ func Run(ctx context.Context, opts Options, r Runner) error {
 			Next: "if `snowstate state pull " + StateKey + "` finds nothing, run mv backend.tf backend.tf.disabled in " + opts.Dir +
 				" and run snowstate install again; otherwise compare the two before deleting terraform.tfstate"}
 	}
-	if _, err := r.LookPath(opts.Binary); err != nil {
+	if _, err := r.LookPath(opts.Binary); err != nil && !opts.WriteOnly {
 		return &StepError{Step: "find " + opts.Binary, Err: err, Next: "install Terraform or OpenTofu, or pass --binary"}
 	}
 
@@ -114,6 +117,10 @@ func Run(ctx context.Context, opts Options, r Runner) error {
 	}
 	if err := writeIfAbsent(filepath.Join(opts.Dir, varsFile), []byte(vars)); err != nil {
 		return &StepError{Step: "write " + varsFile, Err: err, Next: rerun}
+	}
+	if opts.WriteOnly {
+		say("wrote the Foundation, and ran nothing: README.md in " + opts.Dir + " has each step by hand, or run snowstate install without --write-only")
+		return nil
 	}
 	if moved {
 		return change(ctx, opts, base, r, say)

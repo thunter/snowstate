@@ -42,6 +42,7 @@ It connects as SNOWSTATE_SEED with the configured key, which the Seed creates.`,
 	cmd.Flags().StringVar(&opts.Dir, "dir", "snowstate-foundation", "directory for the Foundation's Terraform code")
 	cmd.Flags().StringVar(&opts.Binary, "binary", "terraform", "Terraform or OpenTofu binary")
 	cmd.Flags().BoolVar(&opts.AutoApprove, "auto-approve", false, "apply the plan without asking")
+	cmd.Flags().BoolVar(&opts.WriteOnly, "write-only", false, "write the Terraform code and terraform.tfvars, then stop")
 	_ = cmd.MarkFlagRequired("database")
 	return cmd
 }

@@ -267,6 +267,7 @@ snowstate install --database <name> [flags]
 | `--dir <path>` | `snowstate-foundation` | Directory for the Terraform code. Keep it, and commit it if you like. |
 | `--binary <name>` | `terraform` | Terraform or OpenTofu binary, such as `tofu`. |
 | `--auto-approve` | off | Apply the plan without asking. |
+| `--write-only` | off | Write the Terraform code and `terraform.tfvars`, then stop. Nothing runs, and Snowflake isn't contacted. |
 
 ```bash
 export SNOWSTATE_SNOWFLAKE__ACCOUNT=myorg-myaccount

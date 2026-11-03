@@ -531,3 +531,19 @@ func TestSavedSettingsCanBeSourcedWithSpacesInThePath(t *testing.T) {
 	require.NoError(t, Run(context.Background(), opts, runner))
 	require.Equal(t, svcExec+"init -input=false", runner.calls[0])
 }
+
+func TestWriteOnlyWritesTheCodeAndRunsNothing(t *testing.T) {
+	opts, out := newOptions(t, "")
+	opts.WriteOnly = true
+	runner := &fakeRunner{} // no binary on the path, and nothing should need one
+
+	require.NoError(t, Run(context.Background(), opts, runner))
+
+	require.Empty(t, runner.calls)
+	for _, name := range []string{"main.tf", "variables.tf", "outputs.tf", "versions.tf", "backend.tf.disabled", "README.md", "terraform.tfvars"} {
+		require.FileExists(t, filepath.Join(opts.Dir, name))
+	}
+	require.NoFileExists(t, filepath.Join(opts.Dir, "snowstate.env"))
+	require.Contains(t, out.String(), "wrote the Foundation, and ran nothing")
+	require.Contains(t, out.String(), "README.md")
+}

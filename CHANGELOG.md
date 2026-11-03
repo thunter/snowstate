@@ -12,6 +12,7 @@
 - Remove `deploy/snowflake/bootstrap.sql`. The Seed and `snowstate install` replace it, and the `schema_per_project` and
   GitHub identity setup is in the operator guide, marked unverified.
 - `snowstate migrate` says which role to use when it lacks privileges.
+- `snowstate install --write-only` writes the Foundation's Terraform code without running anything.
 - `snowstate install` is safe to run again: it resumes where it stopped, applies later Foundation changes through snowstate, and shows any difference from the shipped code.
 
 ## 0.1.0 - 2026-11-01
