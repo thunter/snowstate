@@ -76,8 +76,8 @@ GRANT ROLE TF_TUTORIAL_ROLE TO USER TF_TUTORIAL_USER;
 SELECT CURRENT_ORGANIZATION_NAME() AS ORGANIZATION_NAME, CURRENT_ACCOUNT_NAME() AS ACCOUNT_NAME;
 ```
 
-One role is used for everything here to keep the tutorial short. A real setup separates them: see
-`deploy/snowflake/bootstrap.sql`.
+One role is used for everything here to keep the tutorial short. A real setup separates them: see "Setting up an
+Install" in `docs/operator-guide.md`.
 
 ## 4. Set your environment
 

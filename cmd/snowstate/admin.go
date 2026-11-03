@@ -52,7 +52,7 @@ func newMigrateCmd() *cobra.Command {
 			return withStore(cmd, func(ctx context.Context, cfg *config.Config, st *snowflake.Store) error {
 				res, err := st.Migrate(ctx, dryRun)
 				if err != nil {
-					return err
+					return app.MigrateHint(err, cfg.Snowflake.Role)
 				}
 				verb := "applied"
 				if dryRun {

@@ -482,3 +482,10 @@ and is also what the runbook points at during an outage. Without it, the names d
 shown with a small line diff in the binary, rather than calling `diff`, which Windows doesn't have. Values are
 shell-quoted, so `source` works with spaces in a path. `install` rewrites the file on every run. Because a re-run
 connects with the saved names, a change that renames the runtime role or the warehouse must be run by hand.
+
+**D79. The moved `schema_per_project` and GitHub setup is adapted, not copied (deviates from D62).** Its SQL now runs as
+the Seed role rather than `SECURITYADMIN`, uses `<DB>_` names, gives `<DB>_ADMIN` `CREATE SCHEMA` on the database, which
+`project create` needs and the Foundation doesn't grant, and turns secondary roles off on the GitHub users (D66). None
+of it has been run, which the operator guide says. The `migrate` hint only fires on `003001`, a missing privilege, not
+on `002003`, which Snowflake also uses for a missing object, and it covers an admin role that is short of a grant, such
+as `CREATE HYBRID TABLE` (D64).

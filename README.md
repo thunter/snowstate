@@ -114,27 +114,36 @@ The sidecar runs a local server for the length of one command, using your own Sn
 
 **1. [Install snowstate](#install).**
 
-**2. Configure.** You need a role that can create objects in a schema. `deploy/snowflake/bootstrap.sql` sets up a
-production footprint.
+**2. Seed the account, once.** This creates `SNOWSTATE_SEED`, the identity the next step starts from:
+
+```bash
+openssl genrsa 2048 | openssl pkcs8 -topk8 -nocrypt -out ~/.snowflake/keys/snowstate_seed.p8
+openssl rsa -in ~/.snowflake/keys/snowstate_seed.p8 -pubout -out snowstate_seed.pub
+snowstate seed --public-key-file snowstate_seed.pub > seed.sql   # an admin runs seed.sql as ACCOUNTADMIN
+```
+
+**3. Create an Install.** This applies the Foundation with Terraform, runs `migrate` and `doctor`, and moves the Foundation's
+own state into snowstate. It shows you the plan first:
+
+```bash
+export SNOWSTATE_SNOWFLAKE__ACCOUNT=myorg-myaccount
+export SNOWSTATE_SNOWFLAKE__PRIVATE_KEY_PATH=~/.snowflake/keys/snowstate_seed.p8
+snowstate install --database TF_STATE
+```
+
+Then, as the Seed role, grant `TF_STATE_SVC` to the people and service users who run Terraform, with
+`GRANT ROLE TF_STATE_SVC TO USER ME;`. The role, warehouse, database and schema default to a `TF_STATE` Install, so each of
+them only needs:
 
 ```bash
 export SNOWSTATE_SNOWFLAKE__ACCOUNT=myorg-myaccount
 export SNOWSTATE_SNOWFLAKE__USER=ME
-export SNOWSTATE_SNOWFLAKE__ROLE=SNOWSTATE_ADMIN
-export SNOWSTATE_SNOWFLAKE__WAREHOUSE=SNOWSTATE_WH
-export SNOWSTATE_SNOWFLAKE__DATABASE=TF_STATE
-export SNOWSTATE_SNOWFLAKE__SCHEMA=BACKEND
 export SNOWSTATE_SNOWFLAKE__PRIVATE_KEY_PATH=~/.snowflake/keys/me.p8
 ```
 
-Laptop users can set `SNOWSTATE_SNOWFLAKE__AUTH=externalbrowser` instead of a key.
-
-**3. Create the schema and check it.**
-
-```bash
-snowstate migrate
-snowstate doctor
-```
+Laptop users can set `SNOWSTATE_SNOWFLAKE__AUTH=externalbrowser` instead of a key. `snowstate doctor` warns if your
+session also has other roles, because it then can't prove what `TF_STATE_SVC` alone can do. For a service user, fix that
+with `ALTER USER <name> SET DEFAULT_SECONDARY_ROLES = ();`.
 
 **4. Point a module at it.** The backend block stays empty:
 

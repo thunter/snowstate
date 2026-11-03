@@ -98,7 +98,7 @@ Write the answers down. They resolve SPEC §15 assumptions A1 and A10.
 
 ### 3.2 Ask your admin to create the dev environment
 
-This is a **dev/test** footprint. The production `bootstrap.sql` is something the agent writes in M3. Integration tests create and drop their own throwaway schemas (`BACKEND_IT_<random>`), which is why the dev role needs `CREATE SCHEMA`.
+This is a **dev/test** footprint. Production setup is the Seed and `snowstate install`, in `docs/operator-guide.md`. Integration tests create and drop their own throwaway schemas (`BACKEND_IT_<random>`), which is why the dev role needs `CREATE SCHEMA`.
 
 ```sql
 USE ROLE SYSADMIN;
@@ -256,7 +256,7 @@ Check the exact settings format against the current Claude Code docs. The point 
 - The dev warehouse auto-suspends after 60 s and is capped by the resource monitor at 20 credits a month. Normal development should use a small fraction of that.
 - Integration tests create and drop `BACKEND_IT_*` schemas. If a run crashes, leftovers can be removed with `snow sql -q "SHOW SCHEMAS LIKE 'BACKEND_IT_%' IN DATABASE TF_STATE_DEV"` and a drop. The spec doesn't ask the agent to build a cleanup command, so add one to `docs/decisions.md` if you want it.
 - Never commit `*.p8` keys or `it.env`. The `.gitignore` above covers keys, state files and plan files.
-- Use only `TF_STATE_DEV` during the build. A production database comes later via the agent's `bootstrap.sql`.
+- Use only `TF_STATE_DEV` during the build. A production database comes later, from `snowstate install`.
 
 ---
 

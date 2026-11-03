@@ -46,6 +46,10 @@ func errorNumber(err error) int {
 
 func isPrimaryKeyViolation(err error) bool { return errorNumber(err) == codePrimaryKeyViolation }
 
+// IsInsufficientPrivileges reports whether Snowflake refused a statement
+// because the role lacks a privilege, as opposed to an object being missing.
+func IsInsufficientPrivileges(err error) bool { return errorNumber(err) == codeInsufficientPrivs }
+
 // IsNetworkPolicyRejection reports a login refused because of the client IP.
 // The number is from Snowflake's documented behaviour and was not reproduced
 // here, as the test account has no network policy, so the message is a fallback.

@@ -563,14 +563,14 @@ GitHub Actions is a first-class target. The recommended pattern is **sidecar mod
 -- One service user per repo+environment (or per repo, using a customised `sub` claim)
 CREATE USER GH_PLATFORM_NETWORK_PROD
   TYPE = SERVICE
-  DEFAULT_ROLE = SNOWSTATE_P_PLATFORM          -- project role (§5.3) or <DB>_SVC (shared tenancy, §10)
+  DEFAULT_ROLE = <DB>_P_PLATFORM          -- project role (§5.3) or <DB>_SVC (shared tenancy, §10)
   DEFAULT_WAREHOUSE = <DB>_WH
   WORKLOAD_IDENTITY = (
     TYPE    = OIDC
     ISSUER  = 'https://token.actions.githubusercontent.com'
     SUBJECT = 'repo:<org>/<repo>:environment:prod'   -- must equal the token's `sub`
   );
-GRANT ROLE SNOWSTATE_P_PLATFORM TO USER GH_PLATFORM_NETWORK_PROD;
+GRANT ROLE <DB>_P_PLATFORM TO USER GH_PLATFORM_NETWORK_PROD;
 ```
 
 Document:

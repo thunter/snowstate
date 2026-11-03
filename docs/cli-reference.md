@@ -39,10 +39,10 @@ Settings are applied in this order, with later ones winning:
 3. `SNOWSTATE_*` environment variables, with `__` for nesting
 4. Command-line flags
 
-For example, `SNOWSTATE_SNOWFLAKE__ROLE=SNOWSTATE_ADMIN` sets `snowflake.role`. You can set a value for one command:
+For example, `SNOWSTATE_SNOWFLAKE__ROLE=TF_STATE_ADMIN` sets `snowflake.role`. You can set a value for one command:
 
 ```bash
-SNOWSTATE_SNOWFLAKE__ROLE=SNOWSTATE_ADMIN snowstate migrate
+SNOWSTATE_SNOWFLAKE__ROLE=TF_STATE_ADMIN snowstate migrate
 ```
 
 Only `serve` and `exec` have flags that change configuration. Everything else is set through the file or the environment.
@@ -59,15 +59,10 @@ These variables hold values directly rather than configuring a key:
 
 ### Which role to use
 
-`snowflake.role` defaults to `SNOWSTATE_SVC`, which has no DDL rights, so set the role when a command needs more.
+Roles are named after the Install's database, `<DB>`. `snowflake.role` defaults to `TF_STATE_SVC`, the runtime role of a
+`TF_STATE` Install, which has no DDL rights, so set the role when a command needs more.
 
-| Commands | Role |
-|---|---|
-| `migrate`, `project create` | `SNOWSTATE_ADMIN` |
-| `gc`, `token create`, `token revoke` | `SNOWSTATE_ADMIN` |
-| `serve` | `SNOWSTATE_SVC` |
-| `exec` | Your own role, which must be able to reach the state tables |
-| `doctor`, `state *`, `lock *`, `token list`, `project list` | Any role with access to the tables they read or change |
+The operator guide lists the role each command needs, under "Which role each command needs".
 
 Admin commands talk to Snowflake directly, not through a running server.
 
@@ -295,7 +290,7 @@ Apply this plan? Only 'yes' will be accepted: yes
 ## snowstate migrate
 
 Creates or upgrades the Snowflake objects: the schema if it is missing, then tables, stage and views. It is safe to run
-repeatedly, and it only moves forward. Run it as `SNOWSTATE_ADMIN`.
+repeatedly, and it only moves forward. Run it as `<DB>_ADMIN`. If the role can't create objects, the error says so.
 
 It also tests for hybrid tables. In `hybrid` locking mode it stops with guidance if they are unavailable. With
 `tenancy.mode=schema_per_project`, it upgrades `CONTROL` and every project schema.
@@ -310,7 +305,7 @@ snowstate migrate [flags]
 
 ```bash
 snowstate migrate --dry-run
-SNOWSTATE_SNOWFLAKE__ROLE=SNOWSTATE_ADMIN snowstate migrate
+SNOWSTATE_SNOWFLAKE__ROLE=TF_STATE_ADMIN snowstate migrate
 ```
 
 ```text
@@ -570,7 +565,7 @@ If nothing is held, it prints `no lock held on <key>` and exits `0`.
 ## snowstate project create
 
 Creates a project's schema in `schema_per_project` tenancy, applies the migrations, grants the roles, records the project
-and rebuilds the cross-project inventory view. Run it as `SNOWSTATE_ADMIN`. The roles must already exist.
+and rebuilds the cross-project inventory view. Run it as `<DB>_ADMIN`. The roles must already exist.
 
 The schema is `P_<PROJECT>`, upper-cased, with anything non-alphanumeric changed to `_`. A name that would land on another
 project's schema is refused: `my-app` and `my_app` cannot both exist. It fails unless `tenancy.mode` is `schema_per_project`.
@@ -588,8 +583,8 @@ snowstate project create <name> --role <role> [flags]
 No permission set can update or delete `STATE_VERSIONS` or `AUDIT_LOG`, so project roles cannot erase history.
 
 ```bash
-snowstate project create platform --role SNOWSTATE_P_PLATFORM \
-  --plan-role SNOWSTATE_P_PLATFORM_PLAN
+snowstate project create platform --role TF_STATE_P_PLATFORM \
+  --plan-role TF_STATE_P_PLATFORM_PLAN
 ```
 
 ```text
@@ -607,8 +602,8 @@ snowstate project list
 It has no flags of its own.
 
 ```text
-PROJECT   SCHEMA      ROLE                  PLAN_ROLE                  PERMISSIONS
-platform  P_PLATFORM  SNOWSTATE_P_PLATFORM  SNOWSTATE_P_PLATFORM_PLAN  read,write,lock
+PROJECT   SCHEMA      ROLE                 PLAN_ROLE                 PERMISSIONS
+platform  P_PLATFORM  TF_STATE_P_PLATFORM  TF_STATE_P_PLATFORM_PLAN  read,write,lock
 ```
 
 ## snowstate gc
