@@ -202,7 +202,11 @@ export SNOWSTATE_IT_DATABASE="TF_STATE_DEV"
 export SNOWSTATE_IT_AUTH="keypair"
 export SNOWSTATE_IT_PRIVATE_KEY_PATH="$HOME/.snowflake/keys/snowstate_dev.p8"
 # export SNOWSTATE_IT_PRIVATE_KEY_PASSPHRASE="..."   # only if the key is encrypted
+# export SNOWSTATE_IT_SEED_PRIVATE_KEY_PATH="$HOME/.snowflake/keys/snowstate_seed.p8"   # only for the install test
 ```
+
+The install test needs a Seed on the account, and a `SNOWSTATE_IT_ROLE` above the Seed role, such as `SYSADMIN`, so it can
+remove the test Install afterwards. It skips itself without `SNOWSTATE_IT_SEED_PRIVATE_KEY_PATH`.
 
 Load them before starting Claude Code: `source ~/.config/snowstate/it.env`.
 

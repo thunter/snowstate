@@ -438,3 +438,30 @@ login, and a PKCS#1 `RSA PUBLIC KEY` gets a pointer to `openssl rsa -pubout`. A 
 refused, so a public key followed by a private one can't slip through. Errors never include the file's contents.
 `go:embed` can't reach parent directories, so `deploy/embed.go` embeds `seed.sql` from beside it, and the Foundation
 will join it in #12, which is why §3.1 has no separate entry for it.
+
+**D72. `install` asks for approval itself, then applies the saved plan.** Rather than depend on how Terraform's and
+OpenTofu's own prompts exit when declined, which wasn't checked, `install` runs `plan -out`, asks for `yes`, and applies
+exactly that plan. Only the question is `install`'s: the plan and the apply are Terraform's.
+
+**D73. `install` writes `terraform.tfvars` if it is missing, and runs Terraform with `-chdir`.** The file makes every
+later step runnable by hand, and an existing one is the operator's and is left alone. `-chdir` works the same in
+Terraform and OpenTofu, and lets the sidecar, which has no working directory option, run Terraform in the Foundation
+directory.
+
+**D74. `doctor` warns on secondary roles rather than failing.** People often log in with them on deliberately, so
+failing would block normal use. The warning names the extra roles, and says `doctor` can't prove the configured role
+alone (D66). `install` doesn't treat it as a failure either, because its Seed user has secondary roles off.
+
+**D75. `install` needs key-pair auth and an unencrypted Seed key for now, and always runs as `SNOWSTATE_SEED`.** The
+Foundation's provider block logs in with the Seed key and can't take a passphrase, so both are checked before anything
+runs. The user is pinned rather than read from the settings, so `migrate`, `doctor` and the move can't run as someone
+other than the user Terraform uses. A relative key path is made absolute, because Terraform runs in the Foundation
+directory. `install` takes the account and key from the normal snowstate settings, so a later change can pass another
+login method through without changing the engine.
+
+**D76. `install` checks the moved state, refuses to run twice, and its integration test needs a Seed key (deviates from
+#12 and §8.5).** After the move, a plan through snowstate must show no changes before the local copy is deleted, which
+goes beyond "remove the local state file" but is the cheapest proof the move worked. Until #13 adds re-runs, a directory
+whose backend is already enabled stops `install` straight away, and a failed move puts the backend block back to
+disabled, so running again is safe. The install test needs `SNOWSTATE_IT_SEED_PRIVATE_KEY_PATH` on top of
+`SNOWSTATE_IT_*`, because the Seed is a separate user, and skips itself without it.

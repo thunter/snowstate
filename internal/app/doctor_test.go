@@ -23,3 +23,22 @@ func TestNetworkPolicyHint(t *testing.T) {
 	printConnectivityHint(errors.New("IP 1.2.3.4 is not allowed to access Snowflake"), &out)
 	assert.NotEmpty(t, out.String())
 }
+
+func TestSecondaryRolesWarning(t *testing.T) {
+	var out bytes.Buffer
+	// What CURRENT_SECONDARY_ROLES() returns with them off, and on.
+	printSecondaryRolesWarning(`{"roles":"","value":""}`, "TF_STATE_SVC", &out)
+	assert.Empty(t, out.String())
+
+	printSecondaryRolesWarning(`{"roles":"SNOWSTATE_SEED,TF_STATE_ADMIN","value":"ALL"}`, "TF_STATE_SVC", &out)
+	for _, want := range []string{"WARN", "SNOWSTATE_SEED,TF_STATE_ADMIN", "can't prove the grants of TF_STATE_SVC", "DEFAULT_SECONDARY_ROLES = ()"} {
+		assert.Contains(t, out.String(), want)
+	}
+}
+
+func TestSecondaryRolesWarningWhenUnreadable(t *testing.T) {
+	var out bytes.Buffer
+	printSecondaryRolesWarning("not json", "TF_STATE_SVC", &out)
+	assert.Contains(t, out.String(), "WARN")
+	assert.Contains(t, out.String(), "couldn't read")
+}

@@ -5,6 +5,8 @@
 - Add the Foundation, a Terraform module for an Install's account-level objects, and the Seed that starts it.
 - Add runbook procedures for recovering and removing an Install.
 - Add `snowstate seed`, which prints the Seed SQL with a public key filled in.
+- Add `snowstate install`, which creates an Install with the real Terraform or OpenTofu and moves its state into snowstate.
+- `snowstate doctor` warns when secondary roles mean it can't prove the configured role's grants.
 
 ## 0.1.0 - 2026-11-01
 

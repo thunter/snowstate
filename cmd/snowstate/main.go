@@ -32,7 +32,7 @@ func newRootCmd() *cobra.Command {
 	}
 	root.PersistentFlags().String("config", "", "config file (default ./snowstate.yaml if present)")
 	root.AddCommand(newServeCmd(), newExecCmd(), newMigrateCmd(), newDoctorCmd(),
-		newTokenCmd(), newStateCmd(), newLockCmd(), newProjectCmd(), newGCCmd(), newSeedCmd())
+		newTokenCmd(), newStateCmd(), newLockCmd(), newProjectCmd(), newGCCmd(), newSeedCmd(), newInstallCmd())
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print version information",

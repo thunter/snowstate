@@ -7,6 +7,7 @@ Every `snowstate` command and flag. Configuration keys are covered in full in `s
 | [`serve`](#snowstate-serve) | Run the shared HTTP state backend |
 | [`exec`](#snowstate-exec) | Run a command with a temporary local backend (sidecar mode) |
 | [`seed`](#snowstate-seed) | Print the Seed SQL for an admin to run |
+| [`install`](#snowstate-install) | Create an Install, from Terraform to its state in snowstate |
 | [`migrate`](#snowstate-migrate) | Create or upgrade the Snowflake schema |
 | [`doctor`](#snowstate-doctor) | Check connectivity, grants and setup |
 | [`token create`](#snowstate-token-create), [`list`](#snowstate-token-list), [`revoke`](#snowstate-token-revoke) | Manage API tokens |
@@ -233,6 +234,52 @@ snowstate seed --public-key-file snowstate_seed.pub > seed.sql
 ```text
 $ snowstate seed --public-key-file ~/.snowflake/keys/snowstate_seed.p8
 error: /Users/me/.snowflake/keys/snowstate_seed.p8: this is a private key: pass the public key, from openssl rsa -in <key> -pubout
+```
+
+## snowstate install
+
+Creates an Install. It runs the real Terraform or OpenTofu, never a reimplementation, and each step below can also be run by
+hand, as `deploy/terraform/foundation/README.md` shows.
+
+1. Writes the Foundation's Terraform code, embedded in the binary, to `--dir`, plus a `terraform.tfvars`. A file already
+   there must match, so your code is never overwritten.
+2. Runs `init` and `plan`, shows the plan, and applies it only once you type `yes`, unless you pass `--auto-approve`.
+3. Runs `migrate` as `<DB>_ADMIN`, then `doctor` as `<DB>_SVC`, which proves the runtime role's grants.
+4. Only once `doctor` passes, moves the Foundation's own state into snowstate under `snowstate/foundation/default`, checks
+   that a plan through snowstate shows no changes, and removes the local state files.
+
+It logs in as `SNOWSTATE_SEED`, which [`seed`](#snowstate-seed) creates, so configure the account and the Seed key. It sets
+the role, warehouse, database and schema itself for each step, from the Foundation's outputs. A failed step says which step
+failed and what to do next, and a missing binary fails before anything changes.
+
+```text
+snowstate install --database <name> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--database <name>` | required | Database for the Install. Account-level names derive from it, such as `<name>_ADMIN`. |
+| `--dir <path>` | `snowstate-foundation` | Directory for the Terraform code. Keep it, and commit it if you like. |
+| `--binary <name>` | `terraform` | Terraform or OpenTofu binary, such as `tofu`. |
+| `--auto-approve` | off | Apply the plan without asking. |
+
+```bash
+export SNOWSTATE_SNOWFLAKE__ACCOUNT=myorg-myaccount
+export SNOWSTATE_SNOWFLAKE__PRIVATE_KEY_PATH=~/.snowflake/keys/snowstate_seed.p8
+snowstate install --database TF_STATE
+```
+
+```text
+==> write the Foundation to snowstate-foundation
+==> terraform init
+==> terraform plan
+...
+Apply this plan? Only 'yes' will be accepted: yes
+==> terraform apply
+==> migrate as TF_STATE_ADMIN
+==> doctor as TF_STATE_SVC
+==> move the state into snowstate
+==> done: the Foundation's state is in snowstate under snowstate/foundation/default
 ```
 
 ## snowstate migrate

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 
@@ -44,6 +45,7 @@ func Doctor(ctx context.Context, cfg *config.Config, out io.Writer) bool {
 		check("warehouse", required(session.Warehouse, "warehouse"), session.Warehouse)
 		check("database", required(session.Database, "database"), session.Database)
 		check("schema", required(session.Schema, "schema"), session.Schema)
+		printSecondaryRolesWarning(session.SecondaryRoles, session.Role, out)
 	}
 
 	applied, latest, err := st.SchemaVersion(ctx)
@@ -97,4 +99,25 @@ IPs, so choose one of these (docs/github-actions.md has the details):
   2. Use larger runners with static IPs (GitHub Enterprise Cloud).
   3. Use self-hosted runners inside the corporate network.
 `)
+}
+
+// printSecondaryRolesWarning warns when the session also holds the user's
+// other roles. Every check below then runs with their privileges too, so a
+// pass proves nothing about the configured role (D66). It is a warning, not a
+// failure, because people often log in this way on purpose.
+func printSecondaryRolesWarning(raw, role string, out io.Writer) {
+	var secondary struct {
+		Roles string `json:"roles"`
+	}
+	if err := json.Unmarshal([]byte(raw), &secondary); err != nil {
+		fmt.Fprintf(out, "WARN  %-22s couldn't read CURRENT_SECONDARY_ROLES(), so doctor may not be proving %s alone\n", "secondary roles", role)
+		return
+	}
+	if secondary.Roles == "" {
+		return
+	}
+	fmt.Fprintf(out, `WARN  %-22s %s
+      The session also has these roles, so doctor can't prove the grants of %s alone.
+      For a service user, set DEFAULT_SECONDARY_ROLES = () on the user.
+`, "secondary roles", secondary.Roles, role)
 }

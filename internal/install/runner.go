@@ -1,0 +1,110 @@
+package install
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os/exec"
+
+	"github.com/thunter/snowstate/internal/app"
+	"github.com/thunter/snowstate/internal/config"
+	"github.com/thunter/snowstate/internal/sidecar"
+)
+
+// Exec is the real Runner: the Terraform or OpenTofu binary, Snowflake, and
+// the sidecar, all writing to the operator's terminal.
+type Exec struct {
+	Binary         string
+	Stdin          io.Reader
+	Stdout, Stderr io.Writer
+	Logger         *slog.Logger
+}
+
+var _ Runner = (*Exec)(nil)
+
+// LookPath finds the binary.
+func (e *Exec) LookPath(name string) (string, error) { return exec.LookPath(name) }
+
+// Terraform runs the binary in dir with local state.
+func (e *Exec) Terraform(ctx context.Context, dir string, args ...string) error {
+	cmd := exec.CommandContext(ctx, e.Binary, append([]string{"-chdir=" + dir}, args...)...) //nolint:gosec // running the operator's Terraform is the feature
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = e.Stdin, e.Stdout, e.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s %s: %w", e.Binary, args[0], err)
+	}
+	return nil
+}
+
+// Outputs reads the Foundation's names from local state.
+func (e *Exec) Outputs(ctx context.Context, dir string) (Outputs, error) {
+	cmd := exec.CommandContext(ctx, e.Binary, "-chdir="+dir, "output", "-json") //nolint:gosec // running the operator's Terraform is the feature
+	cmd.Stderr = e.Stderr
+	raw, err := cmd.Output()
+	if err != nil {
+		return Outputs{}, fmt.Errorf("%s output: %w", e.Binary, err)
+	}
+	var values map[string]struct {
+		Value any `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return Outputs{}, fmt.Errorf("%s output: %w", e.Binary, err)
+	}
+	text := func(name string) string { s, _ := values[name].Value.(string); return s }
+	out := Outputs{
+		Database: text("database"), Schema: text("schema"), Warehouse: text("warehouse"),
+		AdminRole: text("admin_role"), RuntimeRole: text("runtime_role"),
+	}
+	if out.Database == "" || out.Schema == "" || out.Warehouse == "" || out.AdminRole == "" || out.RuntimeRole == "" {
+		return Outputs{}, errors.New("the Foundation's outputs are incomplete: was it applied?")
+	}
+	return out, nil
+}
+
+// Migrate runs snowstate migrate in process.
+func (e *Exec) Migrate(ctx context.Context, cfg *config.Config) error {
+	st, err := app.OpenForProvisioning(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+	res, err := st.Migrate(ctx, false)
+	if err != nil {
+		return err
+	}
+	if len(res.Applied) == 0 {
+		fmt.Fprintln(e.Stdout, "schema is up to date")
+	}
+	for _, m := range res.Applied {
+		fmt.Fprintln(e.Stdout, "applied", m)
+	}
+	return nil
+}
+
+// Doctor runs snowstate doctor in process.
+func (e *Exec) Doctor(ctx context.Context, cfg *config.Config) error {
+	if !app.Doctor(ctx, cfg, e.Stdout) {
+		return errors.New("doctor found problems")
+	}
+	return nil
+}
+
+// Sidecar runs the binary in dir through snowstate exec.
+func (e *Exec) Sidecar(ctx context.Context, cfg *config.Config, key, dir string, args ...string) error {
+	code, err := sidecar.Run(ctx, sidecar.Options{
+		Config: cfg, Key: key, Args: append([]string{e.Binary, "-chdir=" + dir}, args...),
+		ShutdownGrace: sidecar.DefaultShutdownGrace, Logger: e.Logger,
+		Stdin: e.Stdin, Stdout: e.Stdout, Stderr: e.Stderr,
+	})
+	switch {
+	case err != nil:
+		return err
+	case code == 2 && args[0] == "plan":
+		return errors.New("the plan shows changes")
+	case code != 0:
+		return fmt.Errorf("%s %s exited with %d", e.Binary, args[0], code)
+	}
+	return nil
+}
