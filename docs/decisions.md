@@ -431,3 +431,10 @@ from a healthy Install, because a first attempt starting from a broken one hid a
 **D70. Teardown leaves the Seed in place (reads §14 M8 narrowly).** "Teardown leaves nothing behind" means nothing from
 the Install: on a real account, 21 resources were destroyed and no `TF_STATE_TEST` objects remained, in each of three
 runs. The Seed is per account, and other Installs may use it.
+
+**D71. `snowstate seed` accepts one RSA public key in SubjectPublicKeyInfo form, and the shipped files live in a
+`deploy` Go package.** Snowflake key-pair auth only takes RSA, so any other key is refused up front rather than at
+login, and a PKCS#1 `RSA PUBLIC KEY` gets a pointer to `openssl rsa -pubout`. A file with more than one PEM block is
+refused, so a public key followed by a private one can't slip through. Errors never include the file's contents.
+`go:embed` can't reach parent directories, so `deploy/embed.go` embeds `seed.sql` from beside it, and the Foundation
+will join it in #12, which is why §3.1 has no separate entry for it.

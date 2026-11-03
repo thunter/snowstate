@@ -502,7 +502,7 @@ Use `database/sql` transactions with gosnowflake (it supports multi-statement tr
 ```
 snowstate serve      [--config file] [flags]        # server mode
 snowstate exec       [--config file] -- <cmd> [args] # sidecar mode
-snowstate seed       --public-key-file path          # print the Seed SQL, never run it (§8.5)
+snowstate seed       --public-key-file file          # print the Seed SQL, never run it (§8.5)
 snowstate install    --database name [--dir path] [--auto-approve] [--binary terraform|tofu]   # create or update an Install (§8.5)
 snowstate migrate    [--dry-run]                     # create/upgrade schema
 snowstate doctor                                     # connectivity, grants, hybrid support, warehouse, round-trip test

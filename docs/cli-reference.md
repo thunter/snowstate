@@ -6,6 +6,7 @@ Every `snowstate` command and flag. Configuration keys are covered in full in `s
 |---|---|
 | [`serve`](#snowstate-serve) | Run the shared HTTP state backend |
 | [`exec`](#snowstate-exec) | Run a command with a temporary local backend (sidecar mode) |
+| [`seed`](#snowstate-seed) | Print the Seed SQL for an admin to run |
 | [`migrate`](#snowstate-migrate) | Create or upgrade the Snowflake schema |
 | [`doctor`](#snowstate-doctor) | Check connectivity, grants and setup |
 | [`token create`](#snowstate-token-create), [`list`](#snowstate-token-list), [`revoke`](#snowstate-token-revoke) | Manage API tokens |
@@ -205,6 +206,33 @@ If the command dies holding its lock:
 snowstate: the command exited while still holding lock 6f1c... on platform/network/prod.
 Check for a partial apply, then release it with:
   snowstate lock release platform/network/prod
+```
+
+## snowstate seed
+
+Prints the SQL for the Seed: the `SNOWSTATE_SEED` role and user that Terraform starts from, with your public key filled in.
+An admin runs it once per account, as `ACCOUNTADMIN`. New Installs don't need it again.
+
+It never connects to Snowflake and needs no configuration, so the person running it doesn't need the admin's credentials.
+It refuses a private key without printing any of it, and only accepts an RSA public key, which Snowflake key-pair auth needs.
+
+```text
+snowstate seed --public-key-file <file>
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--public-key-file <file>` | Yes | PEM public key for the `SNOWSTATE_SEED` user, as written by `openssl rsa -pubout`. |
+
+```bash
+openssl genrsa 2048 | openssl pkcs8 -topk8 -nocrypt -out ~/.snowflake/keys/snowstate_seed.p8
+openssl rsa -in ~/.snowflake/keys/snowstate_seed.p8 -pubout -out snowstate_seed.pub
+snowstate seed --public-key-file snowstate_seed.pub > seed.sql
+```
+
+```text
+$ snowstate seed --public-key-file ~/.snowflake/keys/snowstate_seed.p8
+error: /Users/me/.snowflake/keys/snowstate_seed.p8: this is a private key: pass the public key, from openssl rsa -in <key> -pubout
 ```
 
 ## snowstate migrate
